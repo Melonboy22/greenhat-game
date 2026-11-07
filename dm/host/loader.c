@@ -309,8 +309,8 @@ void dm_fps_state_apply(void) {
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
     // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
     // another factor fixes the size at that fraction (DM_RENDER_SCALE, 0.5 to 1.0). Independent of the frame step: written at target 0 too
-    const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f;
-    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the game's size", rs); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
+    const char *rs = getenv("DM_RENDER_SCALE"); float sc = (float)DM_GAME_RENDER_SCALE;   // the profile's render_scale (1.0 unless it sets one)
+    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the profile's %g", rs, (double)DM_GAME_RENDER_SCALE); sc = (float)DM_GAME_RENDER_SCALE; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     // Screen shape: DM_SCREEN_ASPECT, the screen's width / height between 1.3 and 1.77, makes the builds with screen-shape stubs
     // (Breath of the Wild 1.9.0's patches.py) render that shape: the output keeps its width (1920) and takes the height that gives the ratio, a multiple of 48 so the

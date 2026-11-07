@@ -51,6 +51,35 @@ def real_speed(ctx):
     ctx.put(0x6e6cc4, [B(0x6e6cc4, start)], 'frame step from the measured frame time, never below the game\'s own (state +0x38)')
 
 
+# Frame rate limiter (from cheemu21's kid-with-sword-remake, its V4 frame step). The game has its own frame-rate controller (main+0x3b4ef60, called once a frame with x20 = its
+# config): from the measured frame time it picks a vsync interval between config +0x0 and +0x4 (with hysteresis, +0x50 / +0x54), stores it at +0x48 and fps = 60 / interval
+# at +0x58, then at main+0x3b4f074 (where its paths meet) calls main+0x3b4f160, which hands +0x58 to setFrameRate (main+0x4dc0f0), and the framework's setInterval
+# (main+0x346c5c0) with +0x48, which sets the window's present interval (main+0xf49970) and the framework's fps (+0xfc = 60 / interval). So 30 fps (interval 2) is the game's
+# own mode, with its game time stepping by the interval. The stub at main+0x3b4f074 replaces the interval and fps with the host's step (state page +0x20, 1 = 60 fps, 2 = 30) while
+# a target fps is set (state +0x0, the launcher's Frame rate / DM_FPS_TARGET; 0 = the game's own choice), and counts the vsyncs stepped (+0x30) for the host's speed check.
+# real_speed's step (state +0x38) stays: at 30 the game's own 30 fps mode already steps by two, and the measured time only raises the step when a frame comes later than that
+def fps_limit(ctx):
+    here, emit = ctx.here, ctx.emit
+    site = 0x3b4f074
+    ctx.site(site, 'e00314aa')   # mov x0,x20
+    start = here(); emit(ADRP(16, here(), ctx.state))
+    for w in (0xb9400211,   # ldr w17,[x16]           target fps (float bits; 0 = off)
+              0x34000151,   # cbz w17,orig (+10)
+              0xb9402211,   # ldr w17,[x16,#0x20]     step in vsyncs
+              0x34000111,   # cbz w17,orig (+8)       not decided yet
+              0xb9004a91,   # str w17,[x20,#0x48]     the controller's interval
+              0x52800789,   # mov w9,#60
+              0x1ad10929,   # udiv w9,w9,w17
+              0xb9005a89,   # str w9,[x20,#0x58]      its fps, which setFrameRate takes
+              0xf9401a09,   # ldr x9,[x16,#0x30]
+              0x8b314129,   # add x9,x9,w17,uxtw
+              0xf9001a09,   # str x9,[x16,#0x30]      vsyncs stepped
+              0xaa1403e0):  # orig: mov x0,x20
+        emit(w)
+    emit(B(here(), site + 4))
+    ctx.put(site, [B(site, start)], "frame rate limiter: the frame-rate controller's interval and fps follow the host's vsyncs (state page target fps; 0 = the game's own choice)")
+
+
 # Render scale (DM_RENDER_SCALE, state +0x10, dm/host/loader.c). The 3D views' sizes come from the scale the engine stores at main+0x31d3f48 (str s0,[x20,#0xe5c], found by
 # upstream PR #1497), but that store and the size loop after it (main+0x31d3fd8, which clears the "scale changed" bit 3 of [x20+0xe2c] at main+0x31d40b4) run only in a frame
 # where the dynamic-resolution controller (bl main+0x805aa0) answers status 0, a new scale: at a steady 60 fps it never does, so a stub at the store alone changed nothing until
@@ -117,8 +146,9 @@ def render_scale(ctx):
     ctx.render_scale = 1
 
 
-def frame_step(ctx):   # both stubs of this build, each at its own site
+def frame_step(ctx):   # the three stubs of this build, each at its own site
     real_speed(ctx)
+    fps_limit(ctx)
     render_scale(ctx)
 
 
@@ -129,6 +159,9 @@ BINDING = [
      'why': "the game's own size constants; a function-matched rule could carry them over the game's updates"},
     {'what': 'frame step from the measured frame time', 'now': 'build', 'goal': 'game', 'purpose': 'frame rate',
      'why': "this game's own frame loop; the frame-step state page is general",
+     'blocked': 'frame-step stubs have no function-matched form yet'},
+    {'what': "frame rate limiter: the frame-rate controller's interval and fps from the host", 'now': 'build', 'goal': 'game', 'purpose': 'frame rate',
+     'why': "the game's own 30 fps mode (interval 2), chosen by the host's step so presentation and game time agree (from cheemu21's kid-with-sword-remake)",
      'blocked': 'frame-step stubs have no function-matched form yet'},
     {'what': 'render scale at the dynamic-resolution status and the final 3D view scale store', 'now': 'build', 'goal': 'game', 'purpose': 'rendering',
      'why': "the game's controller status and final scale store are its own code at fixed addresses",

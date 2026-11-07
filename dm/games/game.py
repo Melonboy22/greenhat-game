@@ -161,6 +161,10 @@ def header_one(g):
     if pi not in ('game', 'display'): sys.exit(f'{g.id}: present_interval must be game or display: {pi}')
     ft = g.get('fps_target', '0')   # frame rate cap of the rewriter's frame step (FRAME_STEP in the profile's patches.py: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0) or of the engine's own frame limit (hle_fpslock.c): 0 = the game's own step, 30 / 60
     if ft not in ('0', '30', '60'): sys.exit(f'{g.id}: fps_target must be 0, 30 or 60: {ft}')
+    rsc = g.get('render_scale', '1.0')   # the render-scale stub's default (FRAME_STEP's render_scale in patches.py; the launcher's Render scale and DM_RENDER_SCALE override): 0.5 to 1.0, 1.0 = the game's own size
+    try: rsf = float(rsc)
+    except ValueError: rsf = -1.0
+    if not 0.5 <= rsf <= 1.0: sys.exit(f'{g.id}: render_scale must be 0.5 to 1.0: {rsc}')
     fm = g.get('fps_max', '60')   # the highest rate fps_target and the player's Frame rate may take: 120 only for a game checked at that speed (hle_nvn.c fps_high)
     if fm not in ('60', '120'): sys.exit(f'{g.id}: fps_max must be 60 or 120: {fm}')
     fh = g.get('fps_hold', 'on')   # whether the frame step may hold a frame longer than the cap's vsyncs when frames come late (hle_nvn.c fstep_tick): on / off
@@ -249,6 +253,7 @@ def header_one(g):
          f'#define DM_GAME_CORE_PREEMPT {int(cp == "on")}',
          f'#define DM_GAME_ALLOC_BIG_ALIGN {int(aba == "on")}',
          f'#define DM_GAME_FPS_TARGET {int(ft)}',
+         f'#define DM_GAME_RENDER_SCALE {rsf:g}',   # a plain decimal: the launcher shows it as the Render scale's default (settings.py)
          f'#define DM_GAME_FPS_MAX {int(fm)}',
          f'#define DM_GAME_FPS_HOLD {int(fh == "on")}',
          f'#define DM_GAME_UE_TEXTURE_POOL {int(utp)}',
