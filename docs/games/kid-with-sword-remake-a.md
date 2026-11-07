@@ -26,7 +26,12 @@ Both IPAs carry no settings file: the settings go in the app's `Documents/env.tx
 | env.txt rows stay changeable (A3) | `dm/ios/Sources/LauncherSettings.swift` (`fromFile`, `base`) | A row an env file set was greyed out: with v3's env.txt (`DM_RENDER_SCALE=0.75`) the Render scale slider could not move. The row now starts at the file's value; a choice saved in the launcher wins over the file, Reset goes back to it. Values set at launch (Xcode) stay fixed |
 | Render scale default (A2) | `dm/games/game.py` (profile key `render_scale`, `DM_GAME_RENDER_SCALE`), `dm/host/loader.c`, `dm/games/settings.tsv`, `game.tsv` (`render_scale 0.75`) | The launcher already had a Render scale slider for this build (the rewriter marks `RENDER_SCALE`), starting at 1.0, the game's dynamic resolution. The profile now gives its default |
 
-## Potato (A4)
+| Build | What changed | Tested |
+|---|---|---|
+| A5 | The CPU upload gate (MenAtCafe's mkw-neo): with the guest memory in files, a texture whose storage no zero-copy buffer covers is uploaded on the CPU. Potato skips the pipeline prewarm (`DM_PSO_MANIFEST=off`). The iPhone counts purgeable space as free and stops the game at 2.5 GB free | iPhone, Potato (log 44): footprint 6.0 GB, 2.4 GB of it compressed |
+| A6 | Potato keeps memory pools over 512 MB in the guest files (`DM_POOL_ANON_MAX_MB=512`): only the chunks the GPU reaches are wired | Mac, Potato, played by hand into Kokiri Forest: footprint 4.78 GB (peak 4.83) against 6.31 (peak 6.53), the anonymous pools 2,505 → 746 MB (vmmap). Not yet on the iPhone |
+
+## Potato (A4 to A6)
 
 Aimed at a GPU memory peak under 5 GB, for phones with less memory. Standard peaks at 5.6 GB in Kokiri Forest, on the Mac (with the guest memory in files, as on the iPhone) as on the v3 author's iPhone (5,728 MB). There it holds about 2.1 GB of the game's memory pools the GPU reads, 2.2 GB of textures, 0.5 GB of render-target heaps and 0.2 GB of other buffers.
 

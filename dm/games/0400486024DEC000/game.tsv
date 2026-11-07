@@ -60,7 +60,7 @@ render_scale	0.75
 # 4,400 MB; a smaller recycle bin and a quicker sweep of unused shared textures. DM_NVN_TEX_MIP_SKIP=512 froze the game after the save loaded (Mac), so it is not here.
 # DM_PSO_MANIFEST=off: no prewarm, as it loaded 8,638 shaders and 2,175 pipelines at start, kept all session (about 1.2 GB of the iPhone's footprint at the title screen,
 # log 38); shaders load as an area needs them, from Metal's cache of earlier sessions. Not yet measured as a whole
-potato	DM_RENDER_SCALE=0.6,DM_NVN_TEX_SOFT=1,DM_NVN_RT_LOSSY=1,DM_NVN_GMEM_NOBIG=1,DM_NVN_RES_EVICT_MB=4400,DM_NVN_TEX_RECYCLE_MB=64,DM_NVN_ALIAS_SWEEP=600,DM_PSO_MANIFEST=off
+potato	DM_RENDER_SCALE=0.6,DM_NVN_TEX_SOFT=1,DM_NVN_RT_LOSSY=1,DM_NVN_GMEM_NOBIG=1,DM_NVN_RES_EVICT_MB=4400,DM_NVN_TEX_RECYCLE_MB=64,DM_NVN_ALIAS_SWEEP=600,DM_PSO_MANIFEST=off,DM_POOL_ANON_MAX_MB=512
 # The iPhone's touch gamepad starts in the Native layout (kid-with-sword-remake): translucent keys with icons and letter chips, a floating left stick and the camera on
 # any drag of the right half. 2D, 3D and Tap stay in the in-game menu
 pad_layout	native
