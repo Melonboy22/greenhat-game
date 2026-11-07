@@ -75,6 +75,14 @@ int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);   // libproc.h,
 static int g_gf_tab[GF_MAX];       // the files, open for reading and writing
 static int g_gf_n;                 // how many; 0 while the guest is anonymous. Set by mem_init_once, whose pthread_once orders it before every reader
 static uint64_t g_gf_min_free;     // DM_GUEST_FILE_MIN_FREE in bytes: the free space on the files' disk under which the game is stopped; 0 = never
+// The iPhone's free space for important use (main.m, NSURLVolumeAvailableCapacityForImportantUsageKey): with what the system purges on demand (caches, offloadable data), which
+// statfs's f_bavail leaves out. A phone 8.7 GB free by statfs stopped the game within a minute (kid-with-sword-remake logs 38-40) while its storage was mostly purgeable. 0 = unknown
+uint64_t (*dm_free_important)(void);   // set by the iOS app before the host starts; NULL on the Mac
+static uint64_t gf_free(const struct statfs *fs) {
+    uint64_t f = (uint64_t)fs->f_bavail * fs->f_bsize;
+    if (f < g_gf_min_free && dm_free_important) { uint64_t i = dm_free_important(); if (i > f) f = i; }   // asked only when statfs says too little
+    return f;
+}
 
 // Every second the free space on the files' disk (they all lie on one volume): under DM_GUEST_FILE_MIN_FREE the game is stopped (exit code 87; the memory watchdog's is 86, hle_nvn.c), before a full
 // disk leaves the kernel no room to write the guest's pages out, nor a phone's system any room. Every 10th second one line, [RED] under 2 GB free: what the disk cost so far and the footprint's parts
@@ -83,9 +91,9 @@ static void *guest_file_thread(void *arg) {
     for (unsigned sec = 1;; sec++) {
         sleep(1);
         struct statfs fs; struct rusage_info_v4 ru; task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT; struct stat st;
-        int fs_ok = !fstatfs(g_gf_tab[0], &fs); double avail = fs_ok ? (double)fs.f_bavail * fs.f_bsize / G : -1, held = 0;
-        if (fs_ok && g_gf_min_free && (uint64_t)fs.f_bavail * fs.f_bsize < g_gf_min_free) {
-            LOG("[RED] [mem] guest file: %.1f GB free on its disk, under %.1f: stopping the game (the free space statfs gives, f_bavail, which leaves out space the system could purge)", avail, g_gf_min_free / G);
+        int fs_ok = !fstatfs(g_gf_tab[0], &fs); double avail = fs_ok ? (double)gf_free(&fs) / G : -1, held = 0;
+        if (fs_ok && g_gf_min_free && gf_free(&fs) < g_gf_min_free) {
+            LOG("[RED] [mem] guest file: %.1f GB free on its disk (with what the system can purge, where known), under %.1f: stopping the game", avail, g_gf_min_free / G);
             _exit(87);
         }
         if (sec % 10) continue;
@@ -154,7 +162,7 @@ static int guest_files_map(const char *dir, size_t chunk, int n, struct statfs *
 #else
         uint64_t want = g_gf_min_free + ((uint64_t)8 << 30);
 #endif
-        if ((uint64_t)fs->f_bavail * fs->f_bsize < want) { snprintf(why, nwhy, "%.1f GB free on their disk, under %.1f", (double)fs->f_bavail * fs->f_bsize / G, want / G); ok = 0; }
+        if (gf_free(fs) < want) { snprintf(why, nwhy, "%.1f GB free on their disk, under %.1f", (double)gf_free(fs) / G, want / G); ok = 0; }
     }
     for (int k = 0; ok && k < n; k++) {
         size_t sz = k == n - 1 ? g_reserve - (size_t)k * chunk : chunk; uint8_t *at = g_as + (size_t)k * chunk;
@@ -176,7 +184,11 @@ static void guest_file_init(void) {
     int want = guest_file_wanted(e, DM_GAME_APP_POOL, 0);
 #endif
     if (!want) return;
+#if TARGET_OS_IPHONE
+    g_gf_min_free = mf && *mf ? env_size("DM_GUEST_FILE_MIN_FREE", 0, 0x100000) : (uint64_t)5 << 29;   // 2.5 GB on the iPhone, counted with purgeable space (gf_free)
+#else
     g_gf_min_free = mf && *mf ? env_size("DM_GUEST_FILE_MIN_FREE", 0, 0x100000) : (uint64_t)5 << 30;
+#endif
     size_t chunk = env_size("DM_GUEST_FILE_CHUNK", (size_t)64 << 20, 0x100000); if (!chunk) chunk = (size_t)1 << 30;
     if ((g_reserve + chunk - 1) / chunk > GF_MAX) chunk = ((g_reserve + GF_MAX - 1) / GF_MAX + 0xfffff) & ~(size_t)0xfffff;
     int n = (int)((g_reserve + chunk - 1) / chunk); char dir[1024] = "", why[1400]; struct statfs fs;

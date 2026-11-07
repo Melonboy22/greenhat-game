@@ -125,6 +125,12 @@ static void romfs_identity_report(NSString *doc) {
 }
 
 static NSString *program_env(void);
+// The free space for important use on the guest files' volume, with what iOS purges on demand (hle_svc.c gf_free: statfs alone leaves that out). 0 when unknown
+static uint64_t free_important(void) { @autoreleasepool {
+    NSURL *u = [NSURL fileURLWithPath:NSTemporaryDirectory()]; NSNumber *v = nil; NSError *e = nil;
+    if (![u getResourceValue:&v forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:&e] || ![v isKindOfClass:NSNumber.class]) return 0;
+    return v.unsignedLongLongValue;
+} }
 static int boot_env(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
@@ -178,6 +184,7 @@ static int boot_env(void) {
     if (!dm) { romfs_identity_report(doc); fprintf(stderr, "boot: game files not found (Documents/romfs.img, Documents/romfs or <App>/romfs)\n"); return 0; }
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
+    { extern uint64_t (*dm_free_important)(void); dm_free_important = free_important; }   // hle_svc.c gf_free: purgeable space counts as free
     setenv("DM_GUEST_FILE_DIR", NSTemporaryDirectory().fileSystemRepresentation, 0);   // DM_GUEST_FILE (hle_svc.c) keeps the guest's memory in files there
     setenv("DM_FONT_DIR", [[res stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
     aoc_locate();   // add-on content: Documents/aoc, else <App>/aoc; an empty Documents/aoc explicitly selects no DLC
