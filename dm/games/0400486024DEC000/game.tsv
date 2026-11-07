@@ -54,6 +54,12 @@ fps_target	0
 # Render scale (patches.py render_scale): the 3D views fixed at this fraction of the output, the dynamic resolution off. 0.75 draws 960x540 in handheld's 1280x720
 # (DM_GFX_SCALE=2), the Mighty Green Kokiri Kid fork's iPhone setting; the launcher's Render scale slider moves it from 0.5 to 1.0 (1.0 = the game's own dynamic resolution)
 render_scale	0.75
+# The launcher's Preset: Potato (loader.c dm_preset_apply) for phones with less memory, aimed at a GPU memory peak under 5 GB (Standard peaks at 5.6 GB in Kokiri Forest on the Mac and
+# the v3 author's iPhone). Render scale 0.6 (the launcher locks the slider); cheemu21's softer textures (large 2D game textures without their finest level, made whole again when the
+# game reads one back) beside DM_NVN_TEX_MIP_SKIP's 1024; lossy render targets; large pools wired by chunk (gmem_nobig, -730 MB on the Mac); the guard lets go of idle textures from
+# 4,400 MB; a smaller recycle bin and a quicker sweep of unused shared textures. DM_NVN_TEX_MIP_SKIP=512 froze the game after the save loaded (Mac), so it is not here.
+# Not yet measured as a whole
+potato	DM_RENDER_SCALE=0.6,DM_NVN_TEX_SOFT=1,DM_NVN_RT_LOSSY=1,DM_NVN_GMEM_NOBIG=1,DM_NVN_RES_EVICT_MB=4400,DM_NVN_TEX_RECYCLE_MB=64,DM_NVN_ALIAS_SWEEP=600
 # The iPhone's touch gamepad starts in the Native layout (kid-with-sword-remake): translucent keys with icons and letter chips, a floating left stick and the camera on
 # any drag of the right half. 2D, 3D and Tap stay in the in-game menu
 pad_layout	native

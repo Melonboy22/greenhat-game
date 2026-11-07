@@ -11,6 +11,7 @@ The A builds run The Legend of Zelda: Ocarina of Time (Switch 2, title ID `04004
 | A1 | `OcarinaOfTime-A1.ipa`, 3.3 GB, split | Mighty Green Kokiri Kid v3 (`a044609c`) plus this fork's Forest touch theme, Native layout and X jump icon; Peak8D's movie fix (`99b1b8d0`, below) | Mac, 720p handheld settings of the v3 note: 60 fps in Kokiri Forest after loading (0 dropped frames, p99 16.7 ms), the 3D scene 960x540 scaled to 1280x720 by MetalFX; the title movie at 60 fps. Not yet on the iPhone |
 | A2 | `OcarinaOfTime-A2.ipa`, 3.3 GB, split, with an app icon | A1 plus: the Native layout drawn as flat translucent keys instead of glass; the launcher's **Frame rate** (30 / 60, this fork's V4 frame step); the launcher's **Render scale** slider (0.5 to 1.0) starting at 0.75 | iPhone: ran much worse than A1, with the env.txt below as it was then (it had `DM_NVN_GMEM_SKIP=1`) and the host's frame step at 60 |
 | A3 | `OcarinaOfTime-A3.ipa`, split, with the app icon | A2 with: **Frame rate** back to the game's own step (60 fps, as A1 and v3 ran), 30 still offered; launcher rows an `env.txt` sets start at its value and can still be changed, so the **Render scale** slider moves with `DM_RENDER_SCALE=0.75` in the file; the env.txt is v3's, unchanged | Not yet on the iPhone |
+| A4 | `OcarinaOfTime-A4.ipa`, split, with the app icon | A3 plus: shader-code pools no longer made resident (upstream #1484, 334 MB; via this fork's `2191f7ac`); the launcher's **Preset** (Standard / **Potato**): Potato sets the profile's `potato` list for phones with less memory and locks the Render scale slider at 0.6; the memory readout logs the GPU memory and its peak (`residency set N MB (peak N MB)`) | Not yet on the iPhone. Potato is not measured as a whole (see Potato below) |
 
 Both IPAs carry no settings file: the settings go in the app's `Documents/env.txt` (below). They take the same game image (`romfs.img`, size 26,247,607,298 bytes, index `79d6727a8276e44a`), so a phone that has one for A1 keeps it for A2.
 
@@ -24,6 +25,22 @@ Both IPAs carry no settings file: the settings go in the app's `Documents/env.tx
 | Frame rate limiter (A2; default changed in A3) | `dm/games/0400486024DEC000/patches.py` (`fps_limit`, `ctx.fps_limit`), `game.tsv` (`fps_target 0`), `dm/tools/patch_nso.py` (fixups key `FPS_LIMIT`), `dm/games/settings.tsv` / `settings.py` (Frame rate row: `60 fps (game's own)` and `30 fps`) | This fork's V4 stub at main+0x3b4f074: the game's frame-rate controller takes the host's step, so 30 fps is the game's own 30 fps mode at full speed. It sits beside v3's `real_speed` (state +0x38) and `render_scale` (state +0x10) stubs. A2 defaulted to 60, which hands every frame to the host's frame step (`hle_nvn.c` `fstep_tick`, its holds and probes) instead of the game's own interval; A3 defaults to 0, A1's behaviour, and the stub then runs the original code |
 | env.txt rows stay changeable (A3) | `dm/ios/Sources/LauncherSettings.swift` (`fromFile`, `base`) | A row an env file set was greyed out: with v3's env.txt (`DM_RENDER_SCALE=0.75`) the Render scale slider could not move. The row now starts at the file's value; a choice saved in the launcher wins over the file, Reset goes back to it. Values set at launch (Xcode) stay fixed |
 | Render scale default (A2) | `dm/games/game.py` (profile key `render_scale`, `DM_GAME_RENDER_SCALE`), `dm/host/loader.c`, `dm/games/settings.tsv`, `game.tsv` (`render_scale 0.75`) | The launcher already had a Render scale slider for this build (the rewriter marks `RENDER_SCALE`), starting at 1.0, the game's dynamic resolution. The profile now gives its default |
+
+## Potato (A4)
+
+Aimed at a GPU memory peak under 5 GB, for phones with less memory. Standard peaks at 5.6 GB in Kokiri Forest, on the Mac (with the guest memory in files, as on the iPhone) as on the v3 author's iPhone (5,728 MB). There it holds about 2.1 GB of the game's memory pools the GPU reads, 2.2 GB of textures, 0.5 GB of render-target heaps and 0.2 GB of other buffers.
+
+| Setting | On the Mac (2-minute runs to Kokiri Forest) |
+|---|---|
+| `DM_RENDER_SCALE=0.6` | 0.65 alone: no memory saved (peak 5,786 MB); it is in Potato for the GPU time |
+| `DM_NVN_TEX_SOFT=1` | this fork's V15 ran with it on the iPhone; not measured here |
+| `DM_NVN_RT_LOSSY=1` | this fork's V15 ran with it on the iPhone; not measured here |
+| `DM_NVN_GMEM_NOBIG=1` | pools 2,138 → 1,407 MB, in a run that froze for another setting |
+| `DM_NVN_RES_EVICT_MB=4400` | new: the guard lets go of idle textures from 4,400 MB, without ever stopping the game |
+| `DM_NVN_TEX_RECYCLE_MB=64`, `DM_NVN_ALIAS_SWEEP=600` | a smaller bin of recycled textures, unused shared textures swept sooner |
+| ~~`DM_NVN_TEX_MIP_SKIP=512`~~ | **froze the game** right after the save loaded (the main thread spinning); not in Potato |
+
+`DM_NVN_TEX_MIP_LEVELS`, in the v3 env.txt, is read nowhere: it does nothing.
 
 ## Building
 
