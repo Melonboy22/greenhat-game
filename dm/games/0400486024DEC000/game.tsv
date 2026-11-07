@@ -47,5 +47,8 @@ pool_skip_retired	on
 # The game's compute dispatches with no barrier of its between them run side by side (nvn_mtl.m dispatch_enc): 117 at the start of a frame in Kokiri Forest waited each for the one
 # before, 5.7 ms; side by side 3.7 ms, the frame 27.1 -> 24.9 ms (docked, Apple M4 Pro), the picture within run-to-run noise
 dispatch_overlap	on
+# The iPhone's touch gamepad starts in the Native layout (kid-with-sword-remake): very transparent glass keys with icons and letter chips, a floating left stick and the camera on
+# any drag of the right half. 2D, 3D and Tap stay in the in-game menu
+pad_layout	native
 # The touch controls' Forest colours: blue A, green B, yellow X / Y, red +, deep green shoulders, bronze D-pad, gold rims, all translucent (DmGamepad.m theme_init)
 pad_theme	forest
