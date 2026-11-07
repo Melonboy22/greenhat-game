@@ -278,6 +278,8 @@ static void ws_report(uint64_t frame, uint64_t frames) {
 static NSHashTable *g_res_objects;
 static int g_res_grew;   // the changes the next commit carries include an addition (g_res_dirty, under g_res_mu)
 static _Atomic uint64_t g_guard_set;   // what the residency set holds after its next commit: its size at the last one and what res_add added since. Kept apart for the timer, as a stuck commit holds the set's lock
+static _Atomic uint64_t g_guard_peak;   // the most g_guard_set held (the memory readout: the GPU memory a phone's footprint follows)
+static void guard_peak(uint64_t v) { uint64_t p = atomic_load_explicit(&g_guard_peak, memory_order_relaxed); while (v > p && !atomic_compare_exchange_weak(&g_guard_peak, &p, v)) {} }
 static _Atomic unsigned g_image_heap_n, g_big_n;   // g_big_n: large pools in chunks, whose buffers overlap (BIG_MIN)
 static inline MTL4VisibilityOptions resource_vis(void) { return MTL4VisibilityOptionDevice | (g_image_heap_n || g_big_n ? MTL4VisibilityOptionResourceAlias : 0); }
 // Residency churn by call site (the power line every 300 frames, mtl_res_stats): each commit with changes is a kernel call whose cost grows with what was added or removed
@@ -295,7 +297,7 @@ static void res_add_at(id<MTLAllocation> allocation, int line) { @autoreleasepoo
     { int k = 0; while (k < RS_SITES - 1 && g_rs_site[k].line && g_rs_site[k].line != line) k++; g_rs_site[k].line = line; g_rs_site[k].n++; g_rs_site[k].bytes += r.allocatedSize; }
     [g_res addAllocation:(id<MTLAllocation>)r];
     [g_res_objects addObject:r];
-    g_res_dirty = g_res_grew = 1; atomic_fetch_add_explicit(&g_guard_set, r.allocatedSize, memory_order_relaxed);
+    g_res_dirty = g_res_grew = 1; guard_peak(atomic_fetch_add_explicit(&g_guard_set, r.allocatedSize, memory_order_relaxed) + r.allocatedSize);
     pthread_mutex_unlock(&g_res_mu);
 } }
 static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
@@ -353,7 +355,7 @@ static void res_commit(void) {
             pthread_mutex_unlock(&g_res_mu); return;
         }
         uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); [g_res commit]; g_res_dirty = g_res_grew = 0; g_rs_commits++; g_rs_commit_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
-        atomic_store_explicit(&g_guard_set, g_res.allocatedSize, memory_order_relaxed);
+        atomic_store_explicit(&g_guard_set, g_res.allocatedSize, memory_order_relaxed); guard_peak(g_res.allocatedSize);
     }
     pthread_mutex_unlock(&g_res_mu);
 }
@@ -629,6 +631,10 @@ static void guard_init(void) {
 #if TARGET_OS_IPHONE
         if (!lim) g_guard.stop = g_guard.wall = UINT64_MAX;
 #endif
+        // DM_NVN_RES_EVICT_MB=<MB>: lets go of what it can from that size, whatever the stop level (the launcher's Potato preset, kid-with-sword-remake: a phone with less
+        // memory than Metal's working set suggests). It never stops the game by itself
+        const char *ev = getenv("DM_NVN_RES_EVICT_MB"); uint64_t evb = ev ? strtoull(ev, NULL, 0) << 20 : 0;
+        if (evb) { g_guard.evict = evb; if (g_guard.stop < evb) g_guard.stop = g_guard.wall = UINT64_MAX; MLOG("DM_NVN_RES_EVICT_MB: the GPU memory guard lets go from %llu MB", (unsigned long long)(evb >> 20)); }
     }
     static dispatch_source_t timer;
     timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
@@ -1020,6 +1026,9 @@ static int mtl_addr_mapped(uint64_t addr, uint64_t len) {
     pthread_mutex_lock(&g_mu); int i = pool_find(addr, len); pthread_mutex_unlock(&g_mu);
     return i >= 0;
 }
+// Whether [addr, addr + len) lies in one memory pool, as mtl_addr finds it, without making the pool resident. hle_nvn.c keys_hash checks this way that a shader's code is mapped:
+// through mtl_addr it made every pool holding shader code resident, which the GPU never reads, since the shaders run translated (Ocarina of Time: 222 pools, 334 MB; upstream #1484)
+int mtl_pool_holds(uint64_t addr, uint64_t len) { pthread_mutex_lock(&g_mu); int i = pool_find(addr, len); pthread_mutex_unlock(&g_mu); return i >= 0; }
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     const pc_ent *c = pc_get(addr, len);
     if (c) { *buf = (__bridge void *)c->buf; *off = addr - c->base; return 1; }
@@ -3377,12 +3386,9 @@ static unsigned mip_skip_px(void) { static int v = -1; if (v < 0) { const char *
 static int tex_soft_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TEX_SOFT"); v = e && atoi(e) != 0; if (v) MLOG("DM_NVN_TEX_SOFT: large compressed 2D textures from the game files are made without their finest level (softer textures, less memory)"); } return v; }
 static int soft_hard(const tex_t *t) { uint64_t k = (uint64_t)(uintptr_t)t->mem; pthread_mutex_lock(&g_smu); int h = nvn_hm_get(&g_soft_hard, &k) != NULL; pthread_mutex_unlock(&g_smu); return h; }
 static unsigned mip_skip(const tex_t *t, MTLTextureDescriptor *d) {
-    if (!mip_skip_px() && tex_soft_on()) {
-        if (!fmt_compressed(t->d.format) || (d.usage & MTLTextureUsageShaderWrite) || d.mipmapLevelCount < 3 || t->d.target != 1 || !t->mem) return 0;
-        if (t->pool && t->pool->magic == MAGIC('P', 'O', 'O', 'L') && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL)) return 0;
-        if (MAX(d.width, d.height) < 512 || MIN(d.width, d.height) < 256) return 0;
-        return !soft_hard(t);
-    }
+    if (tex_soft_on() && fmt_compressed(t->d.format) && !(d.usage & MTLTextureUsageShaderWrite) && d.mipmapLevelCount >= 3 && t->d.target == 1 && t->mem &&
+        !(t->pool && t->pool->magic == MAGIC('P', 'O', 'O', 'L') && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && MAX(d.width, d.height) >= 512 && MIN(d.width, d.height) >= 256)
+        return !soft_hard(t);   // soft's rule where it applies, with DM_NVN_TEX_MIP_SKIP too (the Potato preset): a texture the game copies or reads back is made whole again (soft_harden)
     unsigned px = mip_skip_px();
     if (!px || !fmt_compressed(t->d.format) || (d.usage & MTLTextureUsageShaderWrite) || d.mipmapLevelCount < 2) return 0;
     if (t->d.target != 1 && t->d.target != 4 && t->d.target != 8 && t->d.target != 9) return 0;
@@ -4687,7 +4693,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
 #if TARGET_OS_IPHONE
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
 #endif
-    MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (%u of them unreferenced; evicted with pools %llu, on storage takeover %llu, idle %llu, unreferenced and idle %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, aorph, (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)g_alias_idle, (unsigned long long)g_alias_retired, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, avail);
+    MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, residency set %llu MB (peak %llu MB), deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (%u of them unreferenced; evicted with pools %llu, on storage takeover %llu, idle %llu, unreferenced and idle %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total); headroom to the system memory limit %s", frame, rss_mb, gpu, (unsigned long long)(guard_used() >> 20), (unsigned long long)(atomic_load(&g_guard_peak) >> 20), nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, aorph, (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)g_alias_idle, (unsigned long long)g_alias_retired, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, avail);
+    { static int rt = -1; if (rt < 0) { const char *e = getenv("DM_NVN_RES_TOP"); rt = e && atoi(e) != 0; } if (rt) res_top("memory readout (DM_NVN_RES_TOP)"); }   // what the set holds, with every readout
     if (g_gptr_draws) MLOG("bind-time pointers up to frame %llu: %llu sites encoded, %llu of them named a pool (%llu per mille); %llu raw-load shader bindings, %llu of them with a site empty or no site (they rely on the table)", frame,
                            (unsigned long long)g_gptr_sites, (unsigned long long)g_gptr_filled, (unsigned long long)(g_gptr_sites ? g_gptr_filled * 1000 / g_gptr_sites : 0), (unsigned long long)g_gptr_draws, (unsigned long long)g_gptr_short);
     if (trc_on() && g_trc_made) { pthread_mutex_lock(&g_trc_mu); int n = g_ntrc; uint64_t mb = g_trc_bytes >> 20; pthread_mutex_unlock(&g_trc_mu);

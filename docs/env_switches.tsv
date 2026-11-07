@@ -201,6 +201,8 @@ DM_NVN_PROF	diagnostic	`=1` wraps the implemented NVN functions in a timing wrap
 DM_NVN_PROGTRACE	diagnostic	`=<vertex keys,...>` logs matching ProgramSetShaders calls and their guest backtraces
 DM_NVN_REGLUM	diagnostic	`=x0,y0,x1,y1:<file>` (normalized coordinates): on every present records the present number, time, mean luminance and a grayscale thumbnail of that region, to check animation speed against frame rate
 DM_NVN_RES_LIMIT_MB	switch	`=<MB>` makes the GPU memory guard stop the game at that size instead of about 95% of Metal's working set, with the report of what the residency set holds (a low one tests the stop), and lets go of what it can from 84% of it; `0` turns the guard off
+DM_NVN_RES_EVICT_MB	switch	`=<MB>` makes the GPU memory guard let go of what it can (idle shared textures, spare textures, staging blocks) from that size; it never stops the game by itself (the launcher's Potato preset)
+DM_NVN_RES_TOP	diagnostic	`1` logs what the residency set holds (by kind, by format, the largest objects) with every memory readout
 DM_NVN_RP_AREA	switch	`0` makes passes on targets of 16 M pixels or more cover the whole target, as before; by default a draw pass that loads what it keeps stops at the far corner of its scissor when that is at most half the target
 DM_NVN_RT_CONTINUE	switch	`0` ends the pass whenever the game sets render targets, as before; by default SetRenderTargets naming the open pass's targets continues the pass
 DM_NVN_RT_LOSSY	player	`1` (the launcher's Cheemu section, Lossy render targets; off by default) makes color render targets the GPU only draws into with Metal's lossy compression on Apple GPU family 8 and later: RGBA8 / BGRA8 (and sRGB) and RGBA16F, private, 2D, no shader writes or format views; placement-heap targets keep theirs (nvn_mtl.m rt_lossy)
@@ -279,6 +281,7 @@ DM_PRESENT_INTERVAL	switch	`display` presents one frame per display-link tick wh
 DM_PRESENT_LATENCY	switch	`=1` or `2`: overrides the display link's preferred frame latency for every screen and window mode; larger positive values use 2 (default 2 in variable-refresh fullscreen, 1 otherwise)
 DM_PRESENT_LINK	switch	Present pacing: `0` acquires the drawable itself, `1` (the default) presents on a 60 Hz display link, `2` uses a 120 Hz display link with a frame every other tick
 DM_PRESENT_SNAP	player	`=<n>`: present snapshots, a ring of n host textures (2 to 4; `1` = 2) the presents are copied to so the game's swapchain texture is free at once; `0` off (default: the profile's `present_snap`)
+DM_PRESET	player	`potato` (the launcher's Preset: Potato) sets the profile's `potato` list (`<VAR>=<value>,...`) when the game starts, over the env file's and the launcher's values; `standard` (default) sets nothing (loader.c dm_preset_apply)
 DM_PRESENT_UPSCALE	player	`metalfx` scales a picture smaller than its rectangle on the screen through MetalFX's spatial scaler; `off` (the default) scales it bilinearly
 DM_PREV_PROGRAM	switch	What `oe::GetPreviousProgramIndex` answers (default -1, started from HOME); `oe::ExecuteProgram` sets it for the program it starts
 DM_PROBE	diagnostic	`=module:offset,…` (Mac only): puts a `brk` at each guest address and on every hit prints the thread, registers, strings they point to and a backtrace, then runs the original instruction
