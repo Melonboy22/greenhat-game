@@ -302,7 +302,19 @@ static void install_fps_state(module_t *m) {
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
+// The launcher's Preset (kid-with-sword-remake): DM_PRESET=potato sets the profile's potato list (game.py, DM_GAME_POTATO: <VAR>=<value>,...) before anything of the game
+// reads them, over the env file's and the launcher's own values (the Render scale slider among them). Called first in dm_fps_state_apply, when the iOS launcher has set its choices
+static void dm_preset_apply(void) {
+    const char *p = getenv("DM_PRESET"); if (!p || strcmp(p, "potato")) return;
+    const char *list = DM_GAME_POTATO; if (!*list) { LOG("[RED] DM_PRESET=potato: this game's profile has no potato list"); return; }
+    char buf[1024]; snprintf(buf, sizeof buf, "%s", list);
+    for (char *save = NULL, *kv = strtok_r(buf, ",", &save); kv; kv = strtok_r(NULL, ",", &save)) {
+        char *eq = strchr(kv, '='); if (!eq) continue; *eq = 0;
+        setenv(kv, eq + 1, 1); LOG("preset Potato: %s=%s", kv, eq + 1);
+    }
+}
 void dm_fps_state_apply(void) {
+    dm_preset_apply();
     if (!dm_fps_state) return;
     const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
     if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; using the game's own frame step", e); t = 0; }

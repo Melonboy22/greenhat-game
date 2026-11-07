@@ -84,6 +84,12 @@ link_latency30	2
 fps_payback	off
 # The iPhone's touch gamepad starts in the full (3D) layout: the D-pad, L3 / R3 and the right stick, which turns the camera (a drag in the right third of the screen); the simple
 # layout has no right stick. A layout the player switches to in the game menu is kept
+# The launcher's Potato mode (DM_PRESET=potato; loader.c dm_preset_apply sets this list when the game starts): the A line's memory savers, for iPhones with less memory. An iPhone 15
+# Pro (A17 Pro, 8 GB) gives the game about 6.0 GB, against 8.0 on an iPhone 18 Pro, and was ended by the system at the load after the opening cutscene (GPU allocated 2.8 → 7.0 GB in
+# 20 s). With Potato mode off none of these runs. The GPU memory guard lets go from 4,400 MB; a 64 MB texture recycle bin; shared textures nothing looked up for 600 fences swept; the
+# prewarm keeps no pipeline (warm-only, in the background); pools over 512 MB stay in the guest files, wired by the chunks the GPU reaches; render and depth targets of 4 MB and more
+# made only when a draw binds them (lazy textures). The Render scale stays the player's
+potato	DM_NVN_RES_EVICT_MB=4400,DM_NVN_TEX_RECYCLE_MB=64,DM_NVN_ALIAS_SWEEP=600,DM_PSO_WARM_ONLY=1,DM_PSO_PREPARE=0,DM_POOL_ANON_MAX_MB=512,DM_NVN_GMEM_NOBIG=1,DM_TEX_LAZY=2,DM_TEX_LAZY_MIN_KB=4096
 pad_layout	native
 # The touch controls' Forest colours: blue A, green B, yellow X / Y, red +, deep green shoulders, bronze D-pad, gold rims, all translucent (DmGamepad.m theme_init)
 pad_theme	forest

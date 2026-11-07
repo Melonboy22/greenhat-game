@@ -112,6 +112,7 @@ def build(gid, patched, control):
             if can is not None and want not in can: sys.exit(f'settings.tsv:{n}: needs a value {need} never takes: {want} (it takes {", ".join(sorted(can))})')
         if not shown(cond, n): continue
         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
+        if var == 'DM_PRESET': s['sets'] = macro('DM_GAME_POTATO', n).split(',')   # Potato's <VAR>=<value> list: the launcher locks those rows while Potato is picked
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
         if var == 'DM_RENDER_SCALE':   # a game's own slider (game.tsv render_scale min:max:step, render_scale_default, render_scale_marks value=label,...)
             rr, rd, rm = g.get('render_scale', ''), g.get('render_scale_default', ''), g.get('render_scale_marks', '')

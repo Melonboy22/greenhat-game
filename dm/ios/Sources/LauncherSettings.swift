@@ -10,6 +10,7 @@ struct Setting: Decodable, Identifiable {
     let base: Base?        // render scale: the 3D views' size at 1.0, docked and handheld, for the size in pixels (the Mac window)
     struct Base: Decodable { let docked, handheld: [Int] }
     let options: [[String]]?   // choice: [value, label]
+    let sets: [String]?   // the Preset row: the <VAR>=<value> settings its Potato choice sets (loader.c dm_preset_apply)
     let min, max, step: Double?   // range
     let marks: [[String]]?   // range: [value, label] names for values (Ocarina of Time's 0.25, Potato)
     let on, off: String?   // toggle: the values the variable takes (1 / 0 when not given)
@@ -31,7 +32,7 @@ struct Setting: Decodable, Identifiable {
         default: return true
         }
     }
-    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, marks, on, off }
+    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, marks, on, off, sets }
 }
 struct SettingsFile: Decodable { let settings: [Setting] }
 
@@ -82,6 +83,12 @@ final class LauncherModel: ObservableObject {
         let key = String(n[n.startIndex..<eq]), want = String(n[n.index(after: eq)...])
         guard let v = values[key] else { return true }
         return v == want
+    }
+    // A row the chosen preset sets (DM_PRESET=potato): shown at the preset's value and locked (the Render scale under Potato)
+    func presetValue(_ s: Setting) -> String? {
+        guard values["DM_PRESET"] == "potato", let p = settings.first(where: { $0.env == "DM_PRESET" }), let list = p.sets else { return nil }
+        for kv in list { let parts = kv.split(separator: "=", maxSplits: 1).map(String.init); if parts.count == 2 && parts[0] == s.env { return parts[1] } }
+        return nil
     }
     func rows(in section: String) -> [Setting] { settings.filter { $0.sectionTitle == section && visible($0) } }
     // The Mac window: Basic settings first, then Advanced settings, each in the list's sections and order

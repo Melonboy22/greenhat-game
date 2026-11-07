@@ -3,20 +3,22 @@
 import SwiftUI
 
 extension LauncherModel {
-    func binding(_ s: Setting) -> Binding<String> { Binding(get: { self.values[s.env] ?? s.def }, set: { self.values[s.env] = $0 }) }
+    func binding(_ s: Setting) -> Binding<String> { Binding(get: { self.presetValue(s) ?? self.values[s.env] ?? s.def }, set: { self.values[s.env] = $0 }) }
 }
 
 struct SettingRow: View {
     let s: Setting
     @ObservedObject var m: LauncherModel
 
-    private var locked: Bool { m.fixed.contains(s.env) }
+    private var preset: String? { m.presetValue(s) }   // the Potato preset sets this row
+    private var locked: Bool { m.fixed.contains(s.env) || preset != nil }
     private var note: String {
         guard locked else { return s.note }
+        if preset != nil && !m.fixed.contains(s.env) { return (s.note.isEmpty ? "" : s.note + " · ") + "Set by Potato" }
         return (s.note.isEmpty ? "" : s.note + " · ") + (m.fromLaunch.contains(s.env) ? "Set at launch" : "Set by an env file")
     }
     private var rangeValue: Binding<Double> {
-        Binding(get: { Double(m.values[s.env] ?? s.def) ?? s.max ?? 1 },
+        Binding(get: { Double(preset ?? m.values[s.env] ?? s.def) ?? s.max ?? 1 },
                 set: { m.values[s.env] = String(format: "%.2f", $0) })
     }
     private var percentage: String { m.rangeLabel(s, rangeValue.wrappedValue) }
@@ -50,7 +52,7 @@ struct SettingRow: View {
                         .accessibilityValue(percentage)
                 }
             default:
-                Toggle(isOn: Binding(get: { (m.values[s.env] ?? s.def) == s.onValue }, set: { m.values[s.env] = $0 ? s.onValue : s.offValue })) {
+                Toggle(isOn: Binding(get: { (preset ?? m.values[s.env] ?? s.def) == s.onValue }, set: { m.values[s.env] = $0 ? s.onValue : s.offValue })) {
                     settingLabel
                 }
             }
