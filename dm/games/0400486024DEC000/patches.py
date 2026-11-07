@@ -78,6 +78,7 @@ def fps_limit(ctx):
         emit(w)
     emit(B(here(), site + 4))
     ctx.put(site, [B(site, start)], "frame rate limiter: the frame-rate controller's interval and fps follow the host's vsyncs (state page target fps; 0 = the game's own choice)")
+    ctx.fps_limit = 1   # the launcher offers the game's own step (fps_target 0, the default) and 30
 
 
 # Render scale (DM_RENDER_SCALE, state +0x10, dm/host/loader.c). The 3D views' sizes come from the scale the engine stores at main+0x31d3f48 (str s0,[x20,#0xe5c], found by
