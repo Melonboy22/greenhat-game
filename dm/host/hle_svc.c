@@ -77,6 +77,7 @@ static int g_gf_n;                 // how many; 0 while the guest is anonymous. 
 static uint64_t g_gf_min_free;     // DM_GUEST_FILE_MIN_FREE in bytes: the free space on the files' disk under which the game is stopped; 0 = never
 // The iPhone's free space for important use (main.m, NSURLVolumeAvailableCapacityForImportantUsageKey): with what the system purges on demand (caches, offloadable data), which
 // statfs's f_bavail leaves out. A phone 8.7 GB free by statfs stopped the game within a minute (kid-with-sword-remake logs 38-40) while its storage was mostly purgeable. 0 = unknown
+int dm_guest_file_backed(void) { return g_gf_n > 0; }   // nvn_mtl.m up_cpu_gate: a no-copy buffer over the guest would wire file pages
 uint64_t (*dm_free_important)(void);   // set by the iOS app before the host starts; NULL on the Mac
 static uint64_t gf_free(const struct statfs *fs) {
     uint64_t f = (uint64_t)fs->f_bavail * fs->f_bsize;

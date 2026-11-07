@@ -1010,6 +1010,17 @@ static int rel_wired(uintptr_t lo, uintptr_t hi) {   // whether a pool entry ove
     for (int i = 0; i < g_npool; i++) if (g_pools[i].res && g_pools[i].lo < hi && g_pools[i].hi > lo) { w = 1; break; }
     pthread_mutex_unlock(&g_mu); return w;
 }
+// The CPU upload gate (from MenAtCafe's mkw-neo, 5b8810ca / 00d76d51): with the guest memory in files (DM_GUEST_FILE, always on the iPhone for Ocarina of Time) a no-copy buffer over
+// file pages reads them into memory and wires them for the residency set. A packaged texture's GPU upload made one per texture (up_big_src) or wrapped its pool (mtl_addr): Ocarina of
+// Time added 2,487 MB of them in 300 frames as Kokiri Forest loaded on the iPhone (log 42). So a texture whose storage no zero-copy buffer covers yet is deswizzled on the CPU.
+// DM_NVN_UP_CPU_GATE=0 turns it off
+__attribute__((weak)) int dm_guest_file_backed(void) { return 0; }   // hle_svc.c: the guest block is a set of files; graphics tests have no host
+static int pool_wrapped(uint64_t addr, uint64_t len) {   // a pool with a zero-copy buffer overlaps [addr, addr + len)
+    int r = 0; pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < g_npool && !r; i++) r = g_pools[i].buf && g_pools[i].lo < addr + len && addr < g_pools[i].hi;
+    pthread_mutex_unlock(&g_mu); return r;
+}
+static int up_cpu_gate(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_UP_CPU_GATE"); v = (!e || atoi(e) != 0) && dm_guest_file_backed(); if (v) MLOG("texture uploads: on the CPU for storage no zero-copy buffer covers (the guest memory is in files; DM_NVN_UP_CPU_GATE=0 turns it off)"); } return v; }
 static int pool_find(uint64_t addr, uint64_t len) {
     if (g_nbig) { int b = big_of(addr); if (b >= 0) return big_lookup(&g_big[b], addr, len); }
     if (g_plast >= 0 && g_plast < g_npool && addr >= g_pools[g_plast].lo && addr + len <= g_pools[g_plast].hi) return g_plast;
@@ -3409,7 +3420,8 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     if (sk) { d.width = MAX(d.width >> sk, 1u); d.height = MAX(d.height >> sk, 1u); d.mipmapLevelCount -= sk; static uint64_t n; n++; if (n <= 3 || !(n % 2000)) MLOG("DM_NVN_TEX_MIP_SKIP: %llu textures made without their finest level (ser=%llu %ux%u format %#x)", (unsigned long long)n, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format); }
     d.usage |= keep & (MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
     int rb_shift = rb_packed_shift(t->d.format);   // the RGB565 family is repacked into Metal's order on the CPU (rb_packed_shift)
-    int direct = !sk && !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
+    int keep_cpu = up_cpu_gate() && t->mem && !pool_wrapped((uint64_t)(uintptr_t)t->mem, t->L.size);   // the CPU upload gate (up_cpu_gate)
+    int direct = !sk && !keep_cpu && !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
     if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;
     id<MTLTexture> mt = reuse && reuse.pixelFormat == d.pixelFormat && reuse.width == d.width && reuse.height == d.height && reuse.mipmapLevelCount == d.mipmapLevelCount && reuse.textureType == d.textureType
                         && (reuse.usage & d.usage) == d.usage
@@ -3441,9 +3453,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     // A texture in a large pool (BIG_MIN) is read through a buffer of its own, held by the upload batch: a one-time read must not leave its chunk wired for good
     id<MTLBuffer> upsrc = nil;
     int tex_only = t->pool && !gmem_all() && !bm_has((uint64_t)(uintptr_t)t->pool->mem);
-    if (!rb_shift && !sparse && g_nvn_deswz_gpu && (g_nbig || tex_only)) { up_begin(); upsrc = up_big_src((uint64_t)t->mem, t->L.size, &mo, tex_only); if (upsrc) mb = (__bridge void *)upsrc; }
-    int use_gpu = !rb_shift && !sparse && g_nvn_deswz_gpu && (upsrc || mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo));   // a sparse pool's texture is gathered through its page table on the CPU
-    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !rb_shift) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
+    if (!rb_shift && !sparse && !keep_cpu && g_nvn_deswz_gpu && (g_nbig || tex_only)) { up_begin(); upsrc = up_big_src((uint64_t)t->mem, t->L.size, &mo, tex_only); if (upsrc) mb = (__bridge void *)upsrc; }
+    int use_gpu = !rb_shift && !sparse && !keep_cpu && g_nvn_deswz_gpu && (upsrc || mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo));   // a sparse pool's texture is gathered through its page table on the CPU
+    if (g_nvn_deswz_gpu && !use_gpu && !keep_cpu && !sparse && !rb_shift) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
     if (use_gpu) {
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
         up_begin();
