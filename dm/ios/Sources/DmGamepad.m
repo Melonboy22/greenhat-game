@@ -1,10 +1,10 @@
 // Virtual gamepad (Nintendo button positions) + physical controllers (GameController), handed to the host through dm_input_set and dm_pad_set_player (hle_hid.c, bit layout in dm_input.h).
 //   Two layouts, three in handheld mode, picked in the in-game menu (GameMenu.swift) that the menu button at the top centre (a gear) opens; the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_LAYOUT).
 //   The menu button stays while a physical controller is connected, so the menu is there in every layout and with every controller.
-//   Native (native, layout 3): a mobile game's layout in very transparent glass, after the mock-up the player chose: a floating left stick (a thumb on the left half holds it,
+//   Native (native, layout 3): a mobile game's layout in translucent keys, after the mock-up the player chose: a floating left stick (a thumb on the left half holds it,
 //     centred where it lands, or on the drawn ring), the camera (right stick) on any touch of the right half no key takes, and round icon keys whose button letter sits in a small
 //     chip (round for A B X Y + −, square for the shoulders R and ZL): B a sword, A a tap, R a shield, ZL a target, X a jump (two up arrows), Y a grid, + a menu, − a map; the menu button (…) at the top right.
-//     No D-pad, L, ZR, L3 or R3 (the 3D layout has them). Drawn with shape and gradient layers only (no live blur), so it costs the GPU nothing over the picture.
+//     No D-pad, L, ZR, L3 or R3 (the 3D layout has them). Drawn as flat translucent shape layers (no gradients, no live blur), so it costs the GPU nothing over the picture.
 //   Tap (touch): no control but the menu button, every other touch goes to the game's local touch viewport; offered only while the game is in handheld mode, the only one in which it reads the touch screen (Balatro, played by touch).
 //   2D (simple): top corners ZL above L (one column), ZR above R likewise, teardrops with the tip toward the screen corner; − and + side by side at the top centre; the left stick in the bottom-left corner (fixed ring, tilt measured from the ring centre, small dead zone);
 //     the A (right) B (bottom) X (top) Y (left) diamond in the bottom-right corner, sliding a finger between keys switches keys. Each bottom corner holds a single control, so it sits close in (reaching halfway into the side safe-area inset).
@@ -172,7 +172,7 @@ static void pads_start(void);   // Physical controllers, below
     DmLayout _layout;
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
     BOOL _native;                                  // the Native layout is current
-    CALayer *_nat, *_nk[B_N]; CAShapeLayer *_nbase[B_N];   // Native: its layers, one glass disc per key and the disc's base (its fill shows the press)
+    CALayer *_nat, *_nk[B_N]; CAShapeLayer *_nbase[B_N];   // Native: its layers, one translucent disc per key and the disc's base (its fill shows the press)
     CALayer *_nring, *_nknob; CAShapeLayer *_nknobBase;    // Native: the left stick's ring and knob
     CGPoint _lCentre;                              // Native: the left stick's centre while held (where its touch landed, or the ring)
 }
@@ -210,10 +210,10 @@ static CATextLayer *label(CALayer *parent, NSString *s) {
     t.string = s; t.alignmentMode = kCAAlignmentCenter; t.foregroundColor = k_text.CGColor;
     [parent addSublayer:t]; return t;
 }
-// ---- Native layout: glass ----
-// Each control is a disc that lets the picture through: a nearly clear base (its fill turns a light blue while pressed), a soft light from the top, a rim brighter at the upper
-// left, a small highlight near the top, a white icon and the button's letter in a chip. Shape and gradient layers only: no backdrop blur, which would sample the picture every frame
-static UIColor *g_glassIdle, *g_glassOn;
+// ---- Native layout: translucent keys ----
+// Each control is a flat translucent disc, as the 2D and 3D layouts draw theirs: a translucent white fill (brighter while pressed), a thin white outline, a white icon and the
+// button's letter in a chip. Shape layers only: no gradient, rim, highlight or backdrop blur
+static UIColor *g_glassIdle, *g_glassOn, *g_glassLine, *g_glassRing;
 static UIFont *rounded(CGFloat size) {
     UIFontDescriptor *d = [[UIFont systemFontOfSize:size weight:UIFontWeightBold].fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignRounded];
     return d ? [UIFont fontWithDescriptor:d size:size] : [UIFont systemFontOfSize:size weight:UIFontWeightBold];
@@ -226,28 +226,18 @@ static CATextLayer *chipText(CALayer *parent, NSString *s, CGPoint c, CGFloat si
     t.shadowColor = UIColor.blackColor.CGColor; t.shadowOpacity = 0.45; t.shadowRadius = 1.5; t.shadowOffset = CGSizeMake(0, 1);
     [parent addSublayer:t]; return t;
 }
-// A glass disc of radius r in a layer of its own (bounds 2r, its centre at r, r); *base gets the layer whose fill shows the press
-static CALayer *glassDisc(CGFloat r, CAShapeLayer **base) {
+// A translucent disc of radius r in a layer of its own (bounds 2r, its centre at r, r): fill and a thin outline inset by half its width; *base gets the layer whose fill shows the press
+static CALayer *glassDiscFill(CGFloat r, CAShapeLayer **base, UIColor *fill) {
     CALayer *g = [CALayer layer]; g.bounds = CGRectMake(0, 0, 2 * r, 2 * r);
-    CGRect b = g.bounds; CGPathRef circle = CGPathCreateWithEllipseInRect(b, NULL);
-    CAShapeLayer *bl = [CAShapeLayer layer]; bl.frame = b; bl.path = circle; bl.fillColor = g_glassIdle.CGColor;
-    bl.shadowColor = UIColor.blackColor.CGColor; bl.shadowOpacity = 0.10; bl.shadowRadius = 6; bl.shadowOffset = CGSizeMake(0, 2); bl.shadowPath = circle;
+    CGRect b = g.bounds; CGPathRef circle = CGPathCreateWithEllipseInRect(CGRectInset(b, 0.75, 0.75), NULL);
+    CAShapeLayer *bl = [CAShapeLayer layer]; bl.frame = b; bl.path = circle; bl.fillColor = fill.CGColor;
+    bl.strokeColor = g_glassLine.CGColor; bl.lineWidth = 1.5;
+    bl.shadowColor = UIColor.blackColor.CGColor; bl.shadowOpacity = 0.2; bl.shadowRadius = 3; bl.shadowOffset = CGSizeMake(0, 1); bl.shadowPath = circle;
     [g addSublayer:bl]; if (base) *base = bl;
-    CAGradientLayer *sheen = [CAGradientLayer layer]; sheen.frame = b;   // inner light: a little brighter at the top, a soft shade at the bottom
-    sheen.colors = @[(id)[UIColor colorWithWhite:1 alpha:0.08].CGColor, (id)[UIColor colorWithWhite:1 alpha:0].CGColor, (id)[UIColor colorWithWhite:0 alpha:0.05].CGColor];
-    sheen.locations = @[@0, @0.55, @1];
-    CAShapeLayer *sm = [CAShapeLayer layer]; sm.path = circle; sheen.mask = sm; [g addSublayer:sheen];
-    CAGradientLayer *rim = [CAGradientLayer layer]; rim.frame = b; rim.startPoint = CGPointMake(0.1, 0); rim.endPoint = CGPointMake(0.9, 1);   // specular rim: bright upper left, dim lower right
-    rim.colors = @[(id)[UIColor colorWithWhite:1 alpha:0.62].CGColor, (id)[UIColor colorWithWhite:1 alpha:0.10].CGColor, (id)[UIColor colorWithWhite:1 alpha:0.32].CGColor];
-    rim.locations = @[@0, @0.6, @1];
-    CAShapeLayer *rm = [CAShapeLayer layer]; CGPathRef inset = CGPathCreateWithEllipseInRect(CGRectInset(b, 0.8, 0.8), NULL);
-    rm.path = inset; rm.fillColor = nil; rm.strokeColor = UIColor.blackColor.CGColor; rm.lineWidth = 1.6; rim.mask = rm; [g addSublayer:rim]; CGPathRelease(inset);
-    CAShapeLayer *hl = [CAShapeLayer layer]; hl.frame = b;   // a small highlight near the top
-    CGPathRef hp = CGPathCreateWithEllipseInRect(CGRectMake(r - r * 0.62, r * 0.20, r * 1.24, r * 0.17), NULL); hl.path = hp; CGPathRelease(hp);
-    hl.fillColor = [UIColor colorWithWhite:1 alpha:0.13].CGColor; [g addSublayer:hl];
     CGPathRelease(circle);
     return g;
 }
+static CALayer *glassDisc(CGFloat r, CAShapeLayer **base) { return glassDiscFill(r, base, g_glassIdle); }
 // The icon: an SF Symbol in white, centred in the disc
 static void glassSymbol(CALayer *g, NSString *name, CGFloat size, CGFloat scale) {
     UIImage *im = [UIImage systemImageNamed:name withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:size weight:UIImageSymbolWeightSemibold]];
@@ -273,7 +263,7 @@ static void glassSword(CALayer *g, CGFloat s) {
     l.shadowColor = UIColor.blackColor.CGColor; l.shadowOpacity = 0.4; l.shadowRadius = 1.5; l.shadowOffset = CGSizeMake(0, 1); l.shadowPath = p;
     CGPathRelease(p); [g addSublayer:l];
 }
-// The button's letter: a small round glass chip at the lower right (face keys, + and −), or a rounded rectangle for a shoulder (R, ZL), so it never reads as a face key
+// The button's letter: a small round chip at the lower right (face keys, + and −), or a rounded rectangle for a shoulder (R, ZL), so it never reads as a face key
 static void glassChip(CALayer *g, NSString *t, BOOL square, CGFloat scale) {
     CGFloat r = g.bounds.size.width / 2;
     if (square) {
@@ -310,7 +300,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
             k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
             k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
             theme_init();
-            g_glassIdle = [UIColor colorWithWhite:1 alpha:0.04]; g_glassOn = [UIColor colorWithRed:0.55 green:0.85 blue:1 alpha:0.20];
+            g_glassIdle = k_idle; g_glassOn = k_on; g_glassLine = k_line; g_glassRing = k_ringFill;   // Native: the same translucent white as the 2D and 3D layouts
         });
         _controls = [CALayer layer]; [self.layer addSublayer:_controls];
         _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
@@ -699,14 +689,14 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     [CATransaction commit];
     [self refresh];
 }
-// Native: the glass keys and the stick, made again at each layout (sizes and places follow the screen); refresh only moves the stick and swaps the pressed fills
+// Native: the translucent keys and the stick, made again at each layout (sizes and places follow the screen); refresh only moves the stick and swaps the pressed fills
 - (void)layoutNative:(CGFloat)scale {
     _nat.frame = self.layer.bounds;
     for (CALayer *l in [_nat.sublayers copy]) [l removeFromSuperlayer];
     for (int b = 0; b < B_N; b++) { _nk[b] = nil; _nbase[b] = nil; }
     if (!_native) { _nring = _nknob = nil; _nknobBase = nil; return; }
     CGFloat g = self.gu;
-    _nring = glassDisc(N_RING_R * g, NULL); _nring.position = self.natStickHome; [_nat addSublayer:_nring];
+    _nring = glassDiscFill(N_RING_R * g, NULL, g_glassRing); _nring.position = self.natStickHome; [_nat addSublayer:_nring];
     CAShapeLayer *kb = nil; _nknob = glassDisc(N_KNOB_R * g, &kb); _nknobBase = kb; _nknob.position = self.natStickHome; [_nat addSublayer:_nknob];
     static NSString *const sym[B_N] = { [B_A] = @"hand.tap.fill", [B_X] = @"chevron.up.2", [B_Y] = @"square.grid.2x2", [B_R] = @"shield.lefthalf.filled", [B_ZL] = @"scope", [B_PLUS] = @"line.3.horizontal", [B_MINUS] = @"map" };
     static NSString *const chip[B_N] = { [B_A] = @"A", [B_B] = @"B", [B_X] = @"X", [B_Y] = @"Y", [B_R] = @"R", [B_ZL] = @"ZL", [B_PLUS] = @"+", [B_MINUS] = @"\u2212" };
@@ -725,7 +715,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
         _key[b].fillColor = (on ? k_kon[b] : k_kidle[b]).CGColor; _label[b].foregroundColor = (on ? k_ktextOn[b] : k_ktext[b]).CGColor; }
     CGPoint h = self.stickHome, o = [self knobOffset:0];
     _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? k_knobOn : k_knobIdle).CGColor;
-    if (_native) {   // pressed: the base turns light blue and the disc grows a little; the stick's ring sits where it is held, its knob follows the thumb
+    if (_native) {   // pressed: the base turns a brighter white and the disc grows a little; the stick's ring sits where it is held, its knob follows the thumb
         for (int i = 0; i < (int)(sizeof k_nat / sizeof *k_nat); i++) { int b = k_nat[i]; BOOL on = (all >> b) & 1;
             _nbase[b].fillColor = (on ? g_glassOn : g_glassIdle).CGColor; _nk[b].transform = on ? CATransform3DMakeScale(1.06, 1.06, 1) : CATransform3DIdentity; }
         CGPoint c = [self stickCentre:0]; _nring.position = c; _nknob.position = CGPointMake(c.x + o.x, c.y + o.y);
