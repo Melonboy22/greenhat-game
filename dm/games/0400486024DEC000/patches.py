@@ -162,7 +162,7 @@ def gpu_meter_budget(ctx):
     ctx.site(site, '02c94ebd')   # ldr s2,[x8,#0xec8]   16666.67 (x8 = its page)
     start = here(); emit(ADRP(9, here(), ctx.state))
     for w in (0xb9400129,   # ldr w9,[x9]            target fps (float bits; 0 = off)
-              0x34000189,   # cbz w9,orig (+12)
+              0x340001a9,   # cbz w9,orig (+13)
               0x1e270123,   # fmov s3,w9
               0x52848009,   # mov w9,#0x2400
               0x72a92e89,   # movk w9,#0x4974,lsl #16   1e6
@@ -170,6 +170,7 @@ def gpu_meter_budget(ctx):
               0x1e231842):  # fdiv s2,s2,s3          the target's frame time in microseconds
         emit(w)
     emit(ADRP(9, here(), ctx.state))
+    emit(0xbd001d20)        # str s0,[x9,#0x1c]      the GPU time the meter measured, microseconds (s0 at this site: its two counter timestamps apart, scaled), for the host's log (A13)
     emit(0xb9401929)        # ldr w9,[x9,#0x18]      budget share (float bits; 0 = all of it)
     emit(0x34000069)        # cbz w9,+3
     emit(0x1e270123)        # fmov s3,w9

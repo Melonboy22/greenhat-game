@@ -9240,7 +9240,10 @@ static void warm_start(void) {
     pso4_init();   // the pipeline archive opens before the prewarm builds from it
     g_warm_t0 = bp_now();
     atomic_store(&g_warm_running, 1);
-    if (prepare_on() && !warm_only()) {   // warm-only never holds the first frame: a full list on a cold cache is about 15,000 pipelines built from scratch
+    // Warm-only holds the first frame only when asked (DM_PSO_PREPARE=1): a full list on a cold cache is about 15,000 pipelines built from scratch, a long first start, then seconds.
+    // Ocarina of Time's Standard preset asks (kid-with-sword-remake A15): with a new shader chain A14 built them in play, its foliage mesh pipelines 2-6 s each, 16 s in one frame (log 55)
+    const char *pe = getenv("DM_PSO_PREPARE"); int prepare_forced = pe && !strcmp(pe, "1");
+    if (prepare_on() && (!warm_only() || prepare_forced)) {
         long lines = 0; NSArray<WarmTask *> *tasks = warm_parse(paths, &lines);
         if (lines) warm_prepare(tasks, lines);
         else MLOG("pipeline prepare: the prewarm lists hold nothing to build");

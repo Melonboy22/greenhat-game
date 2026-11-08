@@ -1633,8 +1633,9 @@ static void tsummary(uint64_t frame) {
     LOG("[nvn] timing up to frame %llu:%s", frame, line);
     {   // the 3D scale the game last stored (state +0x14, written by a render-scale stub that reports it: Ocarina of Time's patches.py, kid-with-sword-remake A11); 0 = none reported
         extern uint8_t *dm_fps_state;
-        if (dm_fps_state) { float host, game, share; memcpy(&host, dm_fps_state + 0x10, 4); memcpy(&game, dm_fps_state + 0x14, 4); memcpy(&share, dm_fps_state + 0x18, 4);
-            if (game > 0) LOG("[nvn] 3D scale up to frame %llu: %.3f of the output (%s; GPU budget share %.2f, DM_DRS_BUDGET)", frame, (double)game, host > 0 && host < 1 ? "fixed by the host's render scale" : "the game's dynamic resolution", (double)share); }
+        if (dm_fps_state) { float host, game, share, meter; memcpy(&host, dm_fps_state + 0x10, 4); memcpy(&game, dm_fps_state + 0x14, 4); memcpy(&share, dm_fps_state + 0x18, 4); memcpy(&meter, dm_fps_state + 0x1c, 4);
+            // +0x1c: the GPU time the game's own meter last measured (Ocarina of Time's gpu_meter_budget stub, microseconds; A13), against which its resolution controller decides
+            if (game > 0) LOG("[nvn] 3D scale up to frame %llu: %.3f of the output (%s; GPU budget share %.2f, DM_DRS_BUDGET; the game's GPU meter last read %.2f ms)", frame, (double)game, host > 0 && host < 1 ? "fixed by the host's render scale" : "the game's dynamic resolution", (double)share, meter / 1000.0); }
     }
     { void mtl_pso_line(char *, size_t); char pl[1024]; mtl_pso_line(pl, sizeof pl); LOG("[nvn] pipelines up to frame %llu: %s", frame, pl); }
     double tgt = 1000.0 / mtl_fps_target();   // milliseconds one frame should take: 16.7 at 60 fps, 33.3 when the game itself asks for 30 (the over-time / dropped-frame counts below use it)
@@ -2015,7 +2016,15 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if (dm_fps_state && __atomic_load_n((uint32_t *)(dm_fps_state + 0x3c), __ATOMIC_RELAXED) && !dm_detclock_enabled()) {   // a main that steps by the frame time (patch_nso.py FRAME_STEP, +0x38)
         static int on = -1; static nvn_fdelta fd;
         if (on < 0) { const char *e = getenv("DM_FRAME_DELTA"); on = !e || strcmp(e, "0"); LOG("[nvn] game step from the measured frame time: %s", on ? "on" : "off (DM_FRAME_DELTA=0)"); }
-        if (on) { float s = nvn_fdelta_next(&fd, now_ns()); uint32_t b; memcpy(&b, &s, sizeof b); __atomic_store_n((uint32_t *)(dm_fps_state + 0x38), b, __ATOMIC_RELAXED); }
+        // While the host decides the hold (a frame rate target: fstep_tick hands n to the game's frame-rate controller through state +0x20, Ocarina of Time's patches.py fps_limit),
+        // the game's own step is already that hold, the time the frame is shown, and the host pays a late frame back with longer holds. The measured mean on top of it (the stub takes
+        // the larger) lagged every change of hold by up to 8 frames: after a 20 fps stretch the camera ran 1.5 times as fast for 8 frames at 30, after each late frame about 6 % fast,
+        // and the hold changed 116 times in 89 s on an A20 Pro (log 47, 48, 52: camera jitter whenever the frame rate was not steady). So the stub gets 0 then (kid-with-sword-remake A13);
+        // DM_FRAME_DELTA=1 keeps the measured step under a target too
+        static int force = -1; if (force < 0) { const char *e = getenv("DM_FRAME_DELTA"); force = e && !strcmp(e, "1"); }
+        int host_hold = !force && fps_step_cap() && fstep_on();
+        static int was_hold = -1; if (host_hold != was_hold) { was_hold = host_hold; LOG("[nvn] game step: %s", host_hold ? "the host's hold (frame rate target: the game steps by the time each frame is shown)" : "the measured frame time"); }
+        if (on) { float s = host_hold ? 0.0f : nvn_fdelta_next(&fd, now_ns()); if (host_hold) fd.last = 0; uint32_t b; memcpy(&b, &s, sizeof b); __atomic_store_n((uint32_t *)(dm_fps_state + 0x38), b, __ATOMIC_RELAXED); }
     }
     int c = fps_step_cap();
     if (dm_fps_state) { static int was; if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? (dm_movie_playing() ? " (movie playing)" : thermal_capped() ? " (thermal state serious)" : "") : ""); was = c; } }
