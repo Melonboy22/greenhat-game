@@ -42,6 +42,7 @@
 #include "msl_image.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree, one for every game (beside this file, tools/dmsh_chain.py --header)
 #include "game_profile.h"   // game profile constants (profile id, the profile's switches)
+uint64_t nvn_ts_profile_hz = DM_GAME_GPU_TS_HZ;   // counter timestamp rate (nvn_timestamp.h)
 // Texture slot table per stage: 0-127 the combined handles (nvnCommandBufferBindTexture), 128-255 the separate texture binds (NVN_SEPTEX_SLOT0, nvn_obj.h)
 #define NTEX 256
 // The NVN driver's constant segments c0 and c2 (byte offsets, slot counts) and the binding kinds of the shader reflection have one definition, which the shader build reads too (dmsh_build.py through dmsh_abi.py)
@@ -1379,7 +1380,7 @@ static int g_pass_order;    // ordering barriers came in the open draw pass afte
 static int g_pass_late_res; // a draw of the open pass reads memory in a stage after the vertex stage (order_note)
 static uint64_t g_order_vbar;   // ordering barriers kept inside the pass as a vertex-to-vertex barrier (prog_swrites)
 static void img_fit_upgrade(void); static int g_imfit_npend;   // textures an image slot needs a format view of (img_fit), upgraded before the next draw pass opens
-static int g_last_end_relaxed, g_game_barrier;   // the last encoder ended was a draw pass with the relaxed end barrier (nothing else since); the game issued nvnCommandBufferBarrier since the last draw pass began
+static int g_last_end_relaxed, g_game_barrier, g_game_bar_bits;   // the last encoder ended was a draw pass with the relaxed end barrier (nothing else since); the game issued nvnCommandBufferBarrier since the last draw pass began
 static uint64_t g_bar_skip, g_bar_full;            // draw passes begun without / with the consumer barrier (DM_NVN_BARRIER=game)
 static void gp_end(id e);
 // An encoder's end barrier flushes to the device coherence point only. MTL4VisibilityOptionResourceAlias (aliased virtual addresses: overlapping large-pool chunks, image family heaps,
@@ -1483,11 +1484,19 @@ static void gp_report(int n, gp_lab *lab, uint64_t frame) {   // the frame's las
     MLOG("[gpuprof] frame %llu: render %.2f ms, compute / copy %.2f ms over %d encoders (%d render passes, attachments load %.1f MB store %.1f MB), first start to last end %.2f ms", (unsigned long long)frame, tot[0] / 1e3, tot[1] / 1e3, n, np, ld / 1024.0, st / 1024.0, span / 1e3);
     free(lab); atomic_store(&g_gp_busy, 0);
 }
+// Game barriers that order only fragments (NVN_BARRIER_ORDER_FRAGMENTS / _TILED, with texture invalidation): the next rendering's fragment work waits for the earlier rendering, its
+// vertex work does not. The relaxed end of the last draw pass (its vertex and fragment stages before later fragment, compute and copy stages) already orders that, so the consumer
+// barrier is left out as for no barrier. Any other bit (primitives, indirect data, descriptors, caches) keeps the full barrier. From seedds/nxnative PR 1572 (open; Breath of the Wild:
+// full pass-start barriers about 150 → 33 a frame). DM_NVN_BARRIER_FRAG=0 treats every game barrier as before
+static int bar_frag_only(int bits) {
+    static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_BARRIER_FRAG"); v = !(e && !strcmp(e, "0")); }
+    return v && bits && !(bits & ~(NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT));
+}
 static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescriptor *d) { g_cm_enc++; cm_enc_mark(2);   // the draw passes (rp_begin_ex); see barrier_game
     id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; cm_enc_mark(0);
-    if (g_last_end_relaxed && !g_game_barrier && barrier_game() && !g_image_heap_n) g_bar_skip++;
+    if (g_last_end_relaxed && (!g_game_barrier || bar_frag_only(g_game_bar_bits)) && barrier_game() && !g_image_heap_n) g_bar_skip++;
     else { [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; g_bar_full++; }
-    g_game_barrier = 0;
+    g_game_barrier = 0; g_game_bar_bits = 0;
     [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e;
 }
 static inline void enc_r_end_pass(id e) {
@@ -1963,7 +1972,11 @@ static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct time
 // so a game that waits for the fence reads one submission's reports together; a segment whose feedback has not arrived by then takes the last segment's times
 #define SEG_CLK_N 1024
 struct seg_clk { _Atomic int refs; _Atomic uint64_t t[SEG_CLK_N][2]; };   // per submission (g_sclk, allocated at its first cut): guest ns of each cut segment's GPU start / end (0 = no feedback yet)
-static int seg_ts(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_GPU_TS"); v = e && *e ? !strcmp(e, "segment") : DM_GAME_GPU_TS_SEGMENT; MLOG("counter timestamps: %s (profile key gpu_timestamps; DM_NVN_GPU_TS=segment / submission)", v ? "GPU start / end time of their segment" : "one time for the whole submission"); } return v; }
+// Without DM_NVN_GPU_TS: the profile's gpu_timestamps, and segment as well while the game's dynamic resolution runs (DM_RENDER_SCALE 1.0, or no host scale below it): Ocarina of Time's
+// GPU meter reads the GPU time between two of its reports, which one time per submission makes 0, so the resolution never came down (kid-with-sword-remake A10). A fixed scale keeps
+// one time per submission, where sub_cut commits only when the GPU has run out of work
+static int seg_drs(void) { const char *rs = getenv("DM_RENDER_SCALE"); float sc = (float)DM_GAME_RENDER_SCALE; if (rs && *rs) { char *end; float f = strtof(rs, &end); if (end != rs && !*end) sc = f; } return !(sc > 0 && sc < 1.0f); }
+static int seg_ts(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_GPU_TS"); v = e && *e ? !strcmp(e, "segment") : DM_GAME_GPU_TS_SEGMENT || seg_drs(); MLOG("counter timestamps: %s (profile key gpu_timestamps; DM_NVN_GPU_TS=segment / submission)", v ? "GPU start / end time of their segment" : "one time for the whole submission"); } return v; }
 static void seg_clk_put(seg_clk *c) { if (c && atomic_fetch_sub(&c->refs, 1) == 1) free(c); }
 static uint64_t gpu_s_guest_ns(double s) {   // a feedback GPU time (seconds on the mach absolute time base) on the guest clock; 0 when unknown
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
@@ -2252,6 +2265,7 @@ static void cbn_failed(const cbn_entry *me, NSError *err) {
     }
 }
 static void rt_preserve_bound(void);
+static _Atomic int g_seg_inflight;   // main command buffers committed and not reported back yet (sub_cut; from seedds/nxnative 6121fd75)
 uint64_t mtl_sub_commit(void) {
     lc_land();   // clears still waiting (the command list ends with them)
     defer_fallback();   // Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
@@ -2272,7 +2286,8 @@ uint64_t mtl_sub_commit(void) {
     if (n) memcpy(ops, g_post, n * sizeof *ops);
     NSArray<dispatch_block_t> *commit_blocks = [g_commit_blocks copy];
     MTL4CommitOptions *o = [MTL4CommitOptions new];
-    [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; for (dispatch_block_t block in commit_blocks) block(); }];
+    atomic_fetch_add(&g_seg_inflight, 1);
+    [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; atomic_fetch_sub(&g_seg_inflight, 1); for (dispatch_block_t block in commit_blocks) block(); }];
     uint64_t gpu_f = atomic_load(&g_cur_frame); gpu_tag_begin(gpu_f);
     NSString *cctx = @(cctx_snap());
     seg_clk *sc = g_sclk; uint32_t seg_last = g_seg; g_sclk = NULL;
@@ -13608,10 +13623,13 @@ static id<MTLBuffer> mrbuf_get(size_t n) {
 }
 static void mrbuf_put(id<MTLBuffer> b) {   // the readback has landed: the GPU is done with the buffer
     pthread_mutex_lock(&g_mrbuf_mu);
-    int kept = g_mrbuf_n < 16 && g_mrbuf_bytes + b.length <= (16u << 20);
+    // The oldest make room, so a cache full of sizes no longer asked for cannot turn every later size away: each would then be a new buffer, in the residency set and out again (Ocarina of Time: 600 of 0.5 MB per 300 frames; upstream 6121fd75)
+    id<MTLBuffer> out[16]; int nout = 0, kept = b.length <= (16u << 20);
+    while (kept && g_mrbuf_n && (g_mrbuf_n == 16 || g_mrbuf_bytes + b.length > (16u << 20))) { out[nout++] = g_mrbuf[0]; g_mrbuf_bytes -= g_mrbuf[0].length; g_mrbuf_n--; for (int i = 0; i < g_mrbuf_n; i++) g_mrbuf[i] = g_mrbuf[i + 1]; g_mrbuf[g_mrbuf_n] = nil; }
     if (kept) { g_mrbuf[g_mrbuf_n++] = b; g_mrbuf_bytes += b.length; }
     pthread_mutex_unlock(&g_mrbuf_mu);
     if (!kept) res_remove(b);
+    for (int i = 0; i < nout; i++) res_remove(out[i]);
 }
 static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, unsigned layer0, const NVNcopyRegion *r, const char *from, int absorb) {   // absorb: a render pass's readback, which the texture takes as its own (pkg_absorb_note)
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh), nz = r->depth ? r->depth : 1;
@@ -14132,6 +14150,11 @@ static void sub_cut(void) {
     int n = cut_draws();
     if (!g_cb || g_enc) return;
     if ((!g_cut_copy && (n <= 0 || g_stat_draw - g_cut_draw0 < (uint64_t)n)) || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_rt_merged) return;
+    // The cut is there so that the GPU does not sit idle while the host encodes. With earlier work still running a commit gains nothing and queues one more command buffer: each is a call into the kernel on Metal's one submission queue, and with buffers queued behind running
+    // work the GPU waited 5-40 ms with the next one already committed (upstream 6121fd75: Ocarina of Time's frames went 13 / 52 ms in turn). So the commit waits for a cut where the GPU has run out. A copy still commits, as its data must land.
+    // Only with one timestamp per submission (this profile): segment mode needs each segment's own GPU times, which upstream takes from a timestamp heap this tree does not have. DM_NVN_CUT_BUSY=0: every cut commits
+    static int busy = -1; if (busy < 0) { const char *e = getenv("DM_NVN_CUT_BUSY"); busy = !e || atoi(e) != 0; MLOG("segment commits: %s (DM_NVN_CUT_BUSY)", busy && !seg_ts() ? "only when the GPU has run out of work" : "at every cut"); }
+    if (busy && !g_cut_copy && !seg_ts() && atomic_load_explicit(&g_seg_inflight, memory_order_relaxed) > 0) { g_cut_draw0 = g_stat_draw; return; }
     if (g_cut_copy) g_copy_cuts++;
     g_cut_copy = 0;
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -14141,7 +14164,9 @@ static void sub_cut(void) {
     if (seg_ts()) { if (!g_sclk) { g_sclk = calloc(1, sizeof *g_sclk); atomic_store(&g_sclk->refs, 1); } sc = g_sclk; atomic_fetch_add(&sc->refs, 1); }
     cbn_entry cbn = cbn_close('s', k, g_fence + 1);
     MTL4CommitOptions *o = [MTL4CommitOptions new];
+    atomic_fetch_add(&g_seg_inflight, 1);
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
+        atomic_fetch_sub(&g_seg_inflight, 1);
         gpu_tag_done(f, cb.GPUStartTime, cb.GPUEndTime);
         cbn_failed(&cbn, cb.error);
         if (sc) { if (k < SEG_CLK_N) { atomic_store(&sc->t[k][0], gpu_s_guest_ns(cb.GPUStartTime)); atomic_store(&sc->t[k][1], gpu_s_guest_ns(cb.GPUEndTime)); } seg_clk_put(sc); }
@@ -14475,7 +14500,7 @@ void mtl_exec(const uint8_t *p) {
                 PD("I %llu barrier bits %#x%s", g_stat_pass, bits, split ? ": ends the pass (shader writes)" : order ? " (render pass open; a later shader write is ordered after its draws)" : g_enc ? " (render pass open)" : "");
                 if (split) { rp_end(); static int once; if (!once++) MLOG("a game barrier (bits %#x) after shader writes in a draw pass: the pass ends there (first case pass %llu)", bits, (unsigned long long)g_stat_pass); }
                 else if (order) g_pass_order |= (bits & NVN_BARRIER_ORDER_PRIMITIVES_BIT ? 1 : 0) | (bits & (NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT) ? 2 : 0);
-                if (bits) { g_game_barrier = 1; g_fb_bar++; g_cs_gbar = 1; } break; }   // g_fb_bar: snapshots taken before it are stale (see fb_prepare); g_cs_gbar: dispatch_enc
+                if (bits) { g_game_barrier = 1; g_game_bar_bits |= bits; g_fb_bar++; g_cs_gbar = 1; } break; }   // g_fb_bar: snapshots taken before it are stale (see fb_prepare); g_cs_gbar: dispatch_enc
             case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: state_op(h.op, a); break;
             default: break;
         }

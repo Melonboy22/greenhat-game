@@ -147,10 +147,36 @@ def render_scale(ctx):
     ctx.render_scale = 1
 
 
-def frame_step(ctx):   # the three stubs of this build, each at its own site
+# The dynamic resolution's GPU load (stan69b/nxnative oot-main f4b3abd6). The GPU meter (main+0x5a8f0, each frame) takes the GPU time between two counter timestamps in microseconds
+# and its load as a percent of one 1/60 s frame (main+0x5aa54 loads 16666.67 from main+0x3e40ec8, which nothing else reads); the resolution controller steps down above its palette's
+# LoadThreshold (98) and up after IncreaseCounterMax (60) frames below it. Under a 30 fps target a frame has 33.3 ms, but the load stayed a percent of 16.7 ms, so a 25 ms frame read
+# 150% and the scene stayed at its floor (683x384 of 1536x864 in stan69b's measurement). The stub loads the target's frame time instead, 1e6 / target fps (state +0x0, a float:
+# 16666.67 at 60, 33333.33 at 30); without a target, the game's constant. The target, not the step decided per frame: a late frame must not raise its own budget. It matters only with
+# the dynamic resolution on (render scale 1.0) and GPU times the meter can read (counter reports per segment, DM_NVN_GPU_TS=segment)
+def gpu_meter_budget(ctx):
+    here, emit = ctx.here, ctx.emit
+    site = 0x5aa54
+    ctx.site(site, '02c94ebd')   # ldr s2,[x8,#0xec8]   16666.67 (x8 = its page)
+    start = here(); emit(ADRP(9, here(), ctx.state))
+    for w in (0xb9400129,   # ldr w9,[x9]            target fps (float bits; 0 = off)
+              0x340000e9,   # cbz w9,orig (+7)
+              0x1e270123,   # fmov s3,w9
+              0x52848009,   # mov w9,#0x2400
+              0x72a92e89,   # movk w9,#0x4974,lsl #16   1e6
+              0x1e270122,   # fmov s2,w9
+              0x1e231842):  # fdiv s2,s2,s3          the target's frame time in microseconds
+        emit(w)
+    emit(B(here(), site + 4))
+    emit(0xbd4ec902)        # orig: ldr s2,[x8,#0xec8]
+    emit(B(here(), site + 4))
+    ctx.put(site, [B(site, start)], "GPU meter: the load is a percent of the target's frame time (state +0x0 target fps; 0 = the game's 1/60 s)")
+
+
+def frame_step(ctx):   # the four stubs of this build, each at its own site
     real_speed(ctx)
     fps_limit(ctx)
     render_scale(ctx)
+    gpu_meter_budget(ctx)
 
 
 FRAME_STEP = {'e0f3ccfaf50065ae4ea01eb5aeb13b1a': frame_step}   # 1.1.1 (v131072), the main of v0 too
@@ -168,4 +194,7 @@ BINDING = [
      'why': "the game's controller status and final scale store are its own code at fixed addresses",
      'blocked': 'the two sites and their roles are verified for this main build only',
      'checked': 'v131072 main E0F3CCFAF50065AE4EA01EB5AEB13B1A: the status ubfx at +0x31d3ee4, the store at +0x31d3f48 and the size loop that clears bit 3 of +0xe2c, 2026-11-06'},
+    {'what': "GPU meter's budget follows the target fps (dynamic resolution)", 'now': 'build', 'goal': 'engine', 'purpose': 'rendering',
+     'why': "the game's own GPU meter divides by a literal 1/60 s; another build moves the literal and its load (from stan69b's oot-main f4b3abd6)",
+     'blocked': 'frame-step stubs have no function-matched form yet'},
 ]
