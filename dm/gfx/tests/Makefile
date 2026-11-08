@@ -513,7 +513,7 @@ t_tex_recycle: t_tex_recycle.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_tex_recycle.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_tex_recycle
 check_t_tex_recycle: t_tex_recycle
-	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_tex_recycle
-	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_tex_recycle
+	DM_NVN_TEX_RECYCLE=1 DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_tex_recycle
+	DM_NVN_TEX_RECYCLE=1 DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_tex_recycle
 	MTL_DEBUG_LAYER=1 ./t_tex_recycle off
 

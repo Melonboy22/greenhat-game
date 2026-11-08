@@ -395,7 +395,9 @@ static uint64_t g_trc_hit, g_trc_made, g_trc_put, g_trc_evict, g_trc_skip_held, 
 enum { TRC_LO = 70 };   // percent of the working set (ws_bytes) past which nothing is binned (trc_released)
 static _Atomic uint64_t g_trc_hold;   // releases deferred up to this fence are let go, not binned: the GPU memory guard and the retirement of shared textures free memory (trc_hold)
 static void trc_hold(void) { atomic_store(&g_trc_hold, g_fence + 1); }
-static int trc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TEX_RECYCLE"); v = !(e && !strcmp(e, "0")); } return v; }
+static uint64_t trc_cap(void);
+// kid-with-sword-remake V18: off unless asked (DM_NVN_TEX_RECYCLE=1, or the launcher's Potato mode, which sets DM_NVN_TEX_RECYCLE_MB)
+static int trc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TEX_RECYCLE"); v = e ? strcmp(e, "0") != 0 : getenv("DM_NVN_TEX_RECYCLE_MB") != NULL; if (v) MLOG("DM_NVN_TEX_RECYCLE: released textures of the fallback path go into a bin of %llu MB", (unsigned long long)(trc_cap() >> 20)); } return v; }
 static uint64_t trc_cap(void) { static uint64_t v; if (!v) { const char *e = getenv("DM_NVN_TEX_RECYCLE_MB"); v = (e && atoll(e) > 0 ? (uint64_t)atoll(e) : 256) << 20; } return v; }
 static void trc_key_of(MTLTextureDescriptor *d, uint8_t key[64]) {
     memset(key, 0, 64); uint64_t w[8] = {(uint64_t)d.textureType | (uint64_t)d.pixelFormat << 8 | (uint64_t)d.sampleCount << 40 | (uint64_t)d.mipmapLevelCount << 48,
@@ -558,13 +560,19 @@ static void guard_tick(void) {
     if (lv == GUARD_WALL || over >= GUARD_TICKS) guard_stop(used);
 }
 static void guard_init(void) {
-    const char *e = getenv("DM_NVN_RES_LIMIT_MB"); uint64_t ws = g_dev.recommendedMaxWorkingSetSize, lim = e ? strtoull(e, NULL, 0) << 20 : 0;
-    if (!g_res) return;
+    const char *e = getenv("DM_NVN_RES_LIMIT_MB"), *ev = getenv("DM_NVN_RES_EVICT_MB"); uint64_t ws = g_dev.recommendedMaxWorkingSetSize, lim = e ? strtoull(e, NULL, 0) << 20 : 0;
+    // kid-with-sword-remake V18: the guard runs only when asked, by the launcher's Potato mode (DM_NVN_RES_EVICT_MB) or DM_NVN_RES_LIMIT_MB. Otherwise nothing of it runs (no levels,
+    // no timer), and the game behaves as before the guard came in
+    if (!g_res || (!(e && *e) && !(ev && *ev))) return;
     if (ws && !(e && !lim)) { g_guard.wall = MAX(ws, lim); g_guard.stop = lim ? lim : ws / 100 * 95; g_guard.evict = g_guard.stop / 95 * 80;
 #if TARGET_OS_IPHONE
         if (!lim) g_guard.stop = g_guard.wall = UINT64_MAX;
 #endif
     }
+    // DM_NVN_RES_EVICT_MB=<MB>: lets go of what it can from that size, whatever the stop level (the launcher's Potato mode: a phone with less memory than Metal's working set
+    // suggests). It never stops the game by itself (kid-with-sword-remake A4)
+    uint64_t evb = ev ? strtoull(ev, NULL, 0) << 20 : 0;
+    if (evb) { g_guard.evict = evb; if (g_guard.stop < evb) g_guard.stop = g_guard.wall = UINT64_MAX; MLOG("DM_NVN_RES_EVICT_MB: the GPU memory guard lets go from %llu MB", (unsigned long long)(evb >> 20)); }
     static dispatch_source_t timer;
     timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), 100 * NSEC_PER_MSEC, 20 * NSEC_PER_MSEC);
@@ -4353,13 +4361,27 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     pthread_mutex_lock(&g_res_mu); unsigned long nr = (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);
     int live = 0, peak = 0, cap = 0; nvn_dirty_stat(&live, &peak, &cap);
     pthread_mutex_lock(&g_smu); unsigned ns = g_by_serial.n, ashared = g_alias.n, nghost = g_ghost.n; uint64_t ghost_puts = g_ghost_puts;
-    unsigned aorph = 0;   // shared textures no live texture object or finalized serial resolves to: kept only until their storage is taken over or their pool goes (alias_take_over)
+    unsigned aorph = 0, swept = 0; uint64_t aorph_mb = 0, swept_mb = 0;   // shared textures no live texture object or finalized serial resolves to: kept until their storage is taken over or their pool goes (alias_take_over), or until the sweep below
     { CFMutableSetRef held = CFSetCreateMutable(NULL, 0, NULL);
       for (uint32_t i = 0; i < g_by_serial.cap; i++) if (g_by_serial.vals[i]) CFSetAddValue(held, g_by_serial.vals[i]);
       for (uint32_t i = 0; i < g_ghost.cap; i++) if (g_ghost.vals[i]) CFSetAddValue(held, g_ghost.vals[i]);
-      for (uint32_t i = 0; i < g_alias.cap; i++) if (g_alias.vals[i] && !CFSetContainsValue(held, g_alias.vals[i])) aorph++;
+      for (uint32_t i = 0; i < g_ghost_active.cap; i++) if (g_ghost_active.vals[i]) CFSetAddValue(held, g_ghost_active.vals[i]);
+      // The sweep (DM_NVN_ALIAS_SWEEP=<fences>, off by default here; the launcher's Potato mode sets 600): an orphan nothing has looked up for that many fences goes, as a takeover would
+      // take it. A game that moves its images around a pool leaves one per old place: Ocarina of Time, 1,057 of 2,485 in Kokiri Forest. One recreated later over the same storage starts
+      // empty. From the Mighty Green Kokiri Kid line's Ocarina of Time fixes (822ee586, after David Lepe's PR #1386 base)
+      static long age = -1; if (age < 0) { const char *e = getenv("DM_NVN_ALIAS_SWEEP"); age = e ? atol(e) : 0; if (age > 0) MLOG("DM_NVN_ALIAS_SWEEP: shared textures no texture object holds and nothing looked up for %ld fences are let go", age); }
+      alias_key ks[256]; unsigned nk = 0;
+      for (uint32_t i = 0; i < g_alias.cap; i++) if (g_alias.vals[i] && !CFSetContainsValue(held, g_alias.vals[i])) {
+          uint64_t sz = ((__bridge id<MTLTexture>)g_alias.vals[i]).allocatedSize >> 20; aorph++; aorph_mb += sz;
+          if (age <= 0 || nk >= 256) continue;
+          alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
+          uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k);
+          if (!seen || g_fence + 1 - seen > (uint64_t)age) { ks[nk++] = k; swept_mb += sz; }
+      }
+      if (nk) { uint32_t before = g_alias.n; alias_let_go(ks, nk); swept = before - g_alias.n; if (swept) g_ser_gen++; }
       CFRelease(held); }
     pthread_mutex_unlock(&g_smu);
+    if (swept) MLOG("shared textures no texture object holds: %u, %llu MB; %u of them swept, %llu MB (DM_NVN_ALIAS_SWEEP)", aorph, (unsigned long long)aorph_mb, swept, (unsigned long long)swept_mb);
     unsigned long dead_n = 0; unsigned long long dead_mb = 0;
     // Objects read from a weak table come back retained + autoreleased: the frame hook runs on a guest thread with no autorelease pool that drains, so without this wrapper every buffer counted would be pinned for good (the readout creating the leak itself)
     int pres = 0; @autoreleasepool { pthread_mutex_lock(&g_mu); pres = g_pool_res_n; for (id<MTLBuffer> b in g_dead_pools) { dead_n++; dead_mb += b.length; } pthread_mutex_unlock(&g_mu); } dead_mb >>= 20;   // host objects held by serial (textures / packaged textures / programs): if it climbs along with GPU allocated, textures are not being released
