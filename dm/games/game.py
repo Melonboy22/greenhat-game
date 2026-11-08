@@ -188,6 +188,10 @@ def header_one(g):
     if pl not in ('simple', 'full', 'touch', 'native'): sys.exit(f'{g.id}: pad_layout must be simple, full, touch or native: {pl}')   # touch = Tap (no control: every touch goes to the game's touch screen); native = a mobile-game layout in glass (a floating left stick, the camera on the right half, icon keys with the button's letter)
     fwg = g.get('frame_wg', 'off')   # Deadline boost's default (hle_nvn.c fwg_get, the frame workgroup; DM_FRAME_WG and the launcher override): on keeps the frame's threads on the performance cores
     if fwg not in ('off', 'on'): sys.exit(f'{g.id}: frame_wg must be off or on: {fwg}')
+    rsd = g.get('render_scale_default', '')   # the Render scale slider's default for this game (settings.py; loader.c dm_fps_state_apply takes it when DM_RENDER_SCALE is unset): 0.25 to 1.0
+    try: rsd_v = float(rsd) if rsd else 1.0
+    except ValueError: sys.exit(f'{g.id}: render_scale_default must be a number: {rsd}')
+    if not 0.25 <= rsd_v <= 1.0: sys.exit(f'{g.id}: render_scale_default must be 0.25 to 1.0: {rsd}')
     rsp = g.get('res_presets', 'off')   # the launcher's Resolution row (DM_RES_PRESET, hle_fs.c rom_overlay_set): on when the app's romfs_overlay has potato-<mode>/ folders beside <mode>/ (Ocarina of Time: 0.6 of the base)
     if rsp not in ('off', 'on'): sys.exit(f'{g.id}: res_presets must be off or on: {rsp}')
     pth = g.get('pad_theme', 'classic')   # the virtual gamepad's colours (DmGamepad.m theme_init; the launcher's Touch controls style, DM_PAD_THEME, overrides): classic = translucent white, forest = the N64-and-woods palette
@@ -290,6 +294,7 @@ def header_one(g):
          f'#define DM_GAME_PAD_LAYOUT {("simple", "full", "touch", "native").index(pl)}',
          f'#define DM_GAME_PAD_THEME {("classic", "forest").index(pth)}',
          f'#define DM_GAME_RES_PRESETS {int(rsp == "on")}',
+         f'#define DM_GAME_RENDER_SCALE_DEFAULT {rsd_v!r}f',
          f'#define DM_GAME_FRAME_WG {int(fwg == "on")}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
