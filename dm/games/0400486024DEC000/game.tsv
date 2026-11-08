@@ -73,6 +73,15 @@ pso_mtl4	on
 # Frame rate: the host steps the game in whole vsyncs (patches.py FRAME_STEP: the frame-rate controller's interval and fps follow the host's step), so the launcher's Frame rate
 # setting offers 30 and 60. At 30 every frame is held two vsyncs (33.3 ms) and the game's own 30 fps mode steps its time by two, so it runs at full speed
 fps_target	60
+# At 30 fps an iPhone lowers the GPU clock until the work fills most of the frame (iPhone 18 Pro at render scale 0.25: GPU p50 12 ms at 60 fps, 29-30 ms at 30, p95 33-38 ms;
+# log 60: 195 of 300 frames over 33.3 ms, p99 64 ms, 109 payback steps of 3 in 40 s). Three things make the 30 steady:
+# present snapshots, so the game's swapchain texture is free at once and its CPU work overlaps the GPU's instead of starting on the link's tick (log 60 had them off: frame
+# p50 35.9 ms against GPU 29.7 ms, the two back to back; A12 with them on held a p50 of 33.3 ms at the same GPU time). The launcher's Frame buffering row starts on
+present_snap	on
+# the display link's frame latency 2 at the 30 fps cap: 66 ms from submission to display instead of 33, so a 34-38 ms frame is absorbed while the mean fits
+link_latency30	2
+# no payback: a late frame's lost time is let go (the game slows by it, as on the console) instead of a step of 3 vsyncs shown for 2, a half-frame jump in motion on the next frame
+fps_payback	off
 # The iPhone's touch gamepad starts in the full (3D) layout: the D-pad, L3 / R3 and the right stick, which turns the camera (a drag in the right third of the screen); the simple
 # layout has no right stick. A layout the player switches to in the game menu is kept
 pad_layout	native
