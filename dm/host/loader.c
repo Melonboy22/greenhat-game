@@ -324,6 +324,11 @@ void dm_fps_state_apply(void) {
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = (float)DM_GAME_RENDER_SCALE;   // the profile's render_scale (1.0 unless it sets one)
     if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the profile's %g", rs, (double)DM_GAME_RENDER_SCALE); sc = (float)DM_GAME_RENDER_SCALE; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
+    // The dynamic resolution's GPU budget as a share of the target's frame time (state +0x18; a stub that reads it: Ocarina of Time's GPU meter, patches.py gpu_meter_budget):
+    // DM_DRS_BUDGET, 0.1 to 1.0 (low values force the controller down, for a test), default 0.85, so the controller steps down before frames go late rather than at 98 % of the whole frame (kid-with-sword-remake A11, log 48)
+    { const char *b = getenv("DM_DRS_BUDGET"); float share = 0.85f;
+      if (b && *b) { char *end; float v = strtof(b, &end); if (end == b || *end || !(v >= 0.1f && v <= 1.0f)) LOG("[RED] DM_DRS_BUDGET=%s: must be 0.1 to 1.0; keeping 0.85", b); else share = v; }
+      memcpy(dm_fps_state + 0x18, &share, sizeof share); }
     // Screen shape: DM_SCREEN_ASPECT, the screen's width / height between 1.3 and 1.77, makes the builds with screen-shape stubs
     // (Breath of the Wild 1.9.0's patches.py) render that shape: the output keeps its width (1920) and takes the height that gives the ratio, a multiple of 48 so the
     // 2/3-size layout space (1280 wide) stays whole: 1.43 → 1920x1344 and 1280x896. State +0x48 u32 output height, +0x4c u32 layout height, +0x50 its float; 0 = 16:9

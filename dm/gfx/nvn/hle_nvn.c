@@ -1631,6 +1631,11 @@ static void tsummary(uint64_t frame) {
         o += snprintf(line + o, sizeof line - o, " %s p50 %.2f / p95 %.2f / max %.2f ms (%u frames);", g_tname[k], v[n / 2], v[(n * 95) / 100 < n ? (n * 95) / 100 : n - 1], v[n - 1], n);
     }
     LOG("[nvn] timing up to frame %llu:%s", frame, line);
+    {   // the 3D scale the game last stored (state +0x14, written by a render-scale stub that reports it: Ocarina of Time's patches.py, kid-with-sword-remake A11); 0 = none reported
+        extern uint8_t *dm_fps_state;
+        if (dm_fps_state) { float host, game, share; memcpy(&host, dm_fps_state + 0x10, 4); memcpy(&game, dm_fps_state + 0x14, 4); memcpy(&share, dm_fps_state + 0x18, 4);
+            if (game > 0) LOG("[nvn] 3D scale up to frame %llu: %.3f of the output (%s; GPU budget share %.2f, DM_DRS_BUDGET)", frame, (double)game, host > 0 && host < 1 ? "fixed by the host's render scale" : "the game's dynamic resolution", (double)share); }
+    }
     { void mtl_pso_line(char *, size_t); char pl[1024]; mtl_pso_line(pl, sizeof pl); LOG("[nvn] pipelines up to frame %llu: %s", frame, pl); }
     double tgt = 1000.0 / mtl_fps_target();   // milliseconds one frame should take: 16.7 at 60 fps, 33.3 when the game itself asks for 30 (the over-time / dropped-frame counts below use it)
     { unsigned n = g_tn[0] < TWIN ? g_tn[0] : TWIN, over = 0; double v[TWIN];   // frame interval gets its own line (M1 baseline): number of frames longer than one frame period in this window and p99

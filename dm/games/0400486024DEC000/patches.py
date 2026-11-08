@@ -137,6 +137,7 @@ def render_scale(ctx):
             _bcond(at(9), at(11), 0xa),       # b.ge original        1.0 or more
             0x1e2043c0,                       # fmov s0,s30          the host's fixed scale
             0xbd0e5e80,                       # original: str s0,[x20,#0xe5c]
+            0xbd001600,                       # str s0,[x16,#0x14]   the scale stored, for the host's log (A11)
             0xd51b4211,                       # msr nzcv,x17
             0xa8c147f0,                       # ldp x16,x17,[sp],#16
             0xacc17ffe)):                     # ldp q30,q31,[sp],#32
@@ -152,20 +153,27 @@ def render_scale(ctx):
 # LoadThreshold (98) and up after IncreaseCounterMax (60) frames below it. Under a 30 fps target a frame has 33.3 ms, but the load stayed a percent of 16.7 ms, so a 25 ms frame read
 # 150% and the scene stayed at its floor (683x384 of 1536x864 in stan69b's measurement). The stub loads the target's frame time instead, 1e6 / target fps (state +0x0, a float:
 # 16666.67 at 60, 33333.33 at 30); without a target, the game's constant. The target, not the step decided per frame: a late frame must not raise its own budget. It matters only with
-# the dynamic resolution on (render scale 1.0) and GPU times the meter can read (counter reports per segment, DM_NVN_GPU_TS=segment)
+# the dynamic resolution on (render scale 1.0) and GPU times the meter can read (counter reports per segment, DM_NVN_GPU_TS=segment).
+# A11 (kid-with-sword-remake): the budget is a share of that frame time (state +0x18, DM_DRS_BUDGET, 0.85 by default). At the whole 33.3 ms the controller stepped down only above
+# 98 % (32.6 ms): on an A20 Pro the GPU sat at 29-30 ms with a p95 of 35-37 ms, the scene stayed at 1920x1080 and the late frames were held a third vsync (log 48)
 def gpu_meter_budget(ctx):
     here, emit = ctx.here, ctx.emit
     site = 0x5aa54
     ctx.site(site, '02c94ebd')   # ldr s2,[x8,#0xec8]   16666.67 (x8 = its page)
     start = here(); emit(ADRP(9, here(), ctx.state))
     for w in (0xb9400129,   # ldr w9,[x9]            target fps (float bits; 0 = off)
-              0x340000e9,   # cbz w9,orig (+7)
+              0x34000189,   # cbz w9,orig (+12)
               0x1e270123,   # fmov s3,w9
               0x52848009,   # mov w9,#0x2400
               0x72a92e89,   # movk w9,#0x4974,lsl #16   1e6
               0x1e270122,   # fmov s2,w9
               0x1e231842):  # fdiv s2,s2,s3          the target's frame time in microseconds
         emit(w)
+    emit(ADRP(9, here(), ctx.state))
+    emit(0xb9401929)        # ldr w9,[x9,#0x18]      budget share (float bits; 0 = all of it)
+    emit(0x34000069)        # cbz w9,+3
+    emit(0x1e270123)        # fmov s3,w9
+    emit(0x1e230842)        # fmul s2,s2,s3          the share of the frame the GPU may take
     emit(B(here(), site + 4))
     emit(0xbd4ec902)        # orig: ldr s2,[x8,#0xec8]
     emit(B(here(), site + 4))
