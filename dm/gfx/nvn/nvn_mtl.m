@@ -8996,6 +8996,7 @@ static int warm_stale(NSString *key, NSMutableSet<NSString *> *stale) {
     if (![stale containsObject:key]) { [stale addObject:key]; g_warm_skip_stale++; }
     return 1;
 }
+static int warm_only(void);
 static NvShader *warm_shader(NSString *key, int stage) {
     os_unfair_lock_lock(&g_warm_dict_lock);
     id sh = g_warm_dict[key];
@@ -9013,7 +9014,7 @@ static NvShader *warm_shader(NSString *key, int stage) {
     NvShader *n = shader_load(key, stage, 0);
     if (n && n->stage == 0 && n->has_pull && !n->layer_out && hybrid_on()) pull_load(n);   // fully prepare before publishing
     os_unfair_lock_lock(&g_warm_dict_lock);
-    g_warm_dict[key] = n ?: (id)NSNull.null;
+    if (!warm_only() || !n) g_warm_dict[key] = n ?: (id)NSNull.null;   // warm-only: a shader lives as long as the tasks using it, not until the whole list is done (24,806 libraries in a full list)
     load->shader = n;
     [g_warm_loads removeObjectForKey:key];
     dispatch_group_leave(load->done);
@@ -9074,17 +9075,23 @@ static NSArray<WarmTask *> *warm_parse(NSArray<NSString *> *paths, long *lines) 
     }
     *lines = n; return tasks;
 }
+// DM_PSO_WARM_ONLY=1 (kid-with-sword-remake A12): the prewarm builds each pipeline and lets it go instead of handing it to the submit thread. What it leaves is the system's Metal
+// shader cache on disk: a pipeline the game asks for later is made from it in well under a millisecond (Ocarina of Time on an A20 Pro: 792 in 0.33 s), where one never built on the
+// device took about 300 ms on the submit thread, and compute pipelines 0.5-1.8 s (log 45, areas visited for the first time). Nothing stays in memory: a kept prewarm held about 1.2 GB
+// on the iPhone (log 38). With a list of every pipeline a playthrough reaches, the first visit to an area builds no pipeline; run it in the background (DM_PSO_PREPARE=0)
+static int warm_only(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_PSO_WARM_ONLY"); v = e && atoi(e) > 0; if (v) MLOG("DM_PSO_WARM_ONLY: the prewarm fills the system's shader cache and keeps no pipeline"); } return v; }
 static void warm_task(WarmTask *t) {
     @autoreleasepool {
         if (t->kind == 0) {
+            if (warm_only()) { g_warm_done++; return; }   // a shader line alone builds nothing the system caches; the pipeline lines load what they need
             NvShader *sh = warm_shader(t->key, t->stage);
-            if (sh) { WarmItem *item = [WarmItem new]; item->kind = 0; item->key = t->key; item->shader = sh; warm_enqueue(item); g_warm_shaders++; }
+            if (sh) { if (!warm_only()) { WarmItem *item = [WarmItem new]; item->kind = 0; item->key = t->key; item->shader = sh; warm_enqueue(item); } g_warm_shaders++; }
             g_warm_done++; return;
         }
         if (t->kind == 2) {
             NvShader *cs = warm_shader(t->key, 5); NSError *e = nil; id ps = cs ? cps_make(cs, &e) : nil;
             if (cs && !ps) MLOG("[RED] background compute pipeline creation failed: %s", e.localizedDescription.UTF8String);
-            if (ps) { WarmItem *item = [WarmItem new]; item->kind = 2; item->key = t->key; item->shader = cs; item->object = ps; warm_enqueue(item); g_warm_cps++; }
+            if (ps) { if (!warm_only()) { WarmItem *item = [WarmItem new]; item->kind = 2; item->key = t->key; item->shader = cs; item->object = ps; warm_enqueue(item); } g_warm_cps++; }
             g_warm_done++; return;
         }
         pso_skey sk; [t->rs[0] getBytes:&sk length:sizeof sk];
@@ -9096,7 +9103,8 @@ static void warm_task(WarmTask *t) {
                 (t->tkey ? (ts && ts->stage == 3 && ts->mesh_kind == 1 && ts->fn && !vs->mesh_notask) : vs->mesh_notask)) {
                 NSError *error = nil;
                 id<MTLRenderPipelineState> ps = mtk_build(&sk.k, ts, vs, fs, &error);
-                if (ps) {
+                if (ps && warm_only()) g_warm_mps++;
+                else if (ps) {
                     WarmItem *item = [WarmItem new]; item->kind = 3; item->pso = sk.k; item->object = ps;
                     item->vs = vs; item->vs_key = t->vkey; item->fs = fs; item->fs_key = t->fkey; item->ts = ts; item->ts_key = t->tkey;
                     warm_enqueue(item); g_warm_mps++;
@@ -9119,6 +9127,7 @@ static void warm_task(WarmTask *t) {
                 vs->layer_out = 1; e = nil; ps = pso_build(pso_desc(&k, vs, fs, fsfn, sk.merged), &e); }
             g_warm_done++;
             if (!ps) { MLOG("[RED] background render pipeline creation failed: %s", e.localizedDescription.UTF8String); continue; }
+            if (warm_only()) { g_warm_rps++; continue; }
             WarmItem *item = [WarmItem new]; item->kind = 1; item->vs_key = t->vkey; item->fs_key = t->fkey; item->vs = vs; item->fs = fs; item->fsfn = fsfn; item->pso = k; item->object = ps;
             warm_enqueue(item); g_warm_rps++;
         }
@@ -9231,7 +9240,7 @@ static void warm_start(void) {
     pso4_init();   // the pipeline archive opens before the prewarm builds from it
     g_warm_t0 = bp_now();
     atomic_store(&g_warm_running, 1);
-    if (prepare_on()) {
+    if (prepare_on() && !warm_only()) {   // warm-only never holds the first frame: a full list on a cold cache is about 15,000 pipelines built from scratch
         long lines = 0; NSArray<WarmTask *> *tasks = warm_parse(paths, &lines);
         if (lines) warm_prepare(tasks, lines);
         else MLOG("pipeline prepare: the prewarm lists hold nothing to build");
@@ -9239,7 +9248,7 @@ static void warm_start(void) {
         @autoreleasepool { prepare_prebuild(); }   // then the bases every shader pair's hybrid draws need, before the first frame too (once)
         return;
     }
-    dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);   // Not optional background work: it decides whether the pipelines are ready before the player enters a run
+    dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, warm_only() ? QOS_CLASS_UTILITY : QOS_CLASS_USER_INITIATED, 0);   // Not optional background work: it decides whether the pipelines are ready before the player enters a run (warm-only: it yields to the game, one thread, and what it has not reached yet is built on demand as without it)
     dispatch_queue_t q = dispatch_queue_create("dm.nvn.pso-warm", attr);
     dispatch_async(q, ^{ @autoreleasepool { long lines = 0; for (WarmTask *t in warm_parse(paths, &lines)) warm_task(t); warm_finish(); } });
 }

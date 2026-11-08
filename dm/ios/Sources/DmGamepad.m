@@ -136,7 +136,7 @@ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap, 3 = Native (DM_GAME_PAD_LAYOUT's numbers)
 static NSString *const k_native_key = @"DmPadNativeOffered";   // a profile that starts in Native switches to it once, over a layout saved before Native existed
 // Native layout (in points of an 874 x 402 landscape screen, scaled by gu; x from the corner rectangle's edges, y from its top or bottom): centre, radius
-static const int k_nat[] = {B_B, B_A, B_R, B_ZL, B_X, B_Y, B_PLUS, B_MINUS};
+static const int k_nat[] = {B_Y, B_A, B_B, B_ZR, B_ZL, B_X, B_R, B_PLUS, B_MINUS};
 static const NSTimeInterval K_ZL_TAP = 0.3;
 // Native D-pad (A7): above the stick at the left, its arms' outer edge N_DPAD_R from the centre; a touch within N_DPAD_GRAB of it takes the D-pad, and one landing in the band
 // out to N_DPAD_MOAT goes to neither (no stick starts right beside the D-pad). The stick's ring at home keeps clear of it
@@ -267,8 +267,51 @@ static void glassPartColor(CALayer *g, CGPathRef p, int mode, UIColor *w, CGFloa
     [g addSublayer:l];
 }
 static void glassPart(CALayer *g, CGPathRef p, int mode, CGFloat alpha, CGFloat width) { glassPartColor(g, p, mode, [UIColor colorWithWhite:1 alpha:alpha], width); }
-// B a sword with a winged guard, R a kite shield, ZL a fairy (the guide that marks the target), A a roll arrow round an "!" (roll and interact), X a winged boot (jump),
-// Y an ocarina (items), + a treasure chest (the item screen), − a map scroll
+// The game's own Basic Controls (its pause menu, A12): Y attack (a sword with a winged guard), A actions (a roll arrow round an "!"), B put away (an arrow turning back), X jump
+// (a winged boot), ZL target, which raises the shield too (a fairy), ZR use item (a bow), R quick select items (a ring of slots), + the menu (a treasure chest), − the map (a scroll)
+static void iconBow(CALayer *g, CGFloat s) {
+    CGFloat r = g.bounds.size.width / 2; CGAffineTransform m = CGAffineTransformScale(CGAffineTransformRotate(CGAffineTransformMakeTranslation(r, r), 0 * M_PI / 180), s, s);
+    { CGMutablePathRef p = CGPathCreateMutable();
+      CGPathMoveToPoint(p, &m, -0.35, -0.92);
+      CGPathAddQuadCurveToPoint(p, &m, 0.75, -0.6, 0.75, 0);
+      CGPathAddQuadCurveToPoint(p, &m, 0.75, 0.6, -0.35, 0.92);
+      glassPart(g, p, 2, 0.95, 0.13 * s); CGPathRelease(p); }
+    { CGMutablePathRef p = CGPathCreateMutable();
+      CGPathMoveToPoint(p, &m, -0.35, -0.92);
+      CGPathAddLineToPoint(p, &m, -0.35, 0.92);
+      glassPart(g, p, 2, 0.7, 0.06 * s); CGPathRelease(p); }
+    { CGMutablePathRef p = CGPathCreateMutable();
+      CGPathMoveToPoint(p, &m, -0.85, 0);
+      CGPathAddLineToPoint(p, &m, 0.62, 0);
+      glassPart(g, p, 2, 0.95, 0.1 * s); CGPathRelease(p); }
+    { CGMutablePathRef p = CGPathCreateMutable();
+      { static const CGPoint q[] = {{0.95, 0}, {0.55, -0.2}, {0.55, 0.2}}; CGPathAddLines(p, &m, q, sizeof q / sizeof *q); CGPathCloseSubpath(p); }
+      glassPart(g, p, 0, 0.95, 0 * s); CGPathRelease(p); }
+}
+static void iconWheel(CALayer *g, CGFloat s) {
+    CGFloat r = g.bounds.size.width / 2; CGAffineTransform m = CGAffineTransformScale(CGAffineTransformRotate(CGAffineTransformMakeTranslation(r, r), 0 * M_PI / 180), s, s);
+    { CGMutablePathRef p = CGPathCreateMutable();
+      CGPathAddEllipseInRect(p, &m, CGRectMake(-0.66, -0.66, 1.32, 1.32));
+      glassPart(g, p, 2, 0.55, 0.08 * s); CGPathRelease(p); }
+    { CGMutablePathRef p = CGPathCreateMutable();
+      CGPathAddEllipseInRect(p, &m, CGRectMake(-0.24, -0.9, 0.48, 0.48));
+      CGPathAddEllipseInRect(p, &m, CGRectMake(0.42, -0.24, 0.48, 0.48));
+      CGPathAddEllipseInRect(p, &m, CGRectMake(-0.24, 0.42, 0.48, 0.48));
+      CGPathAddEllipseInRect(p, &m, CGRectMake(-0.9, -0.24, 0.48, 0.48));
+      glassPart(g, p, 0, 0.95, 0 * s); CGPathRelease(p); }
+}
+static void iconBack(CALayer *g, CGFloat s) {
+    CGFloat r = g.bounds.size.width / 2; CGAffineTransform m = CGAffineTransformScale(CGAffineTransformRotate(CGAffineTransformMakeTranslation(r, r), 0 * M_PI / 180), s, s);
+    { CGMutablePathRef p = CGPathCreateMutable();
+      CGPathMoveToPoint(p, &m, 0.7, 0.55);
+      CGPathAddLineToPoint(p, &m, 0.7, 0.05);
+      CGPathAddQuadCurveToPoint(p, &m, 0.7, -0.35, 0.3, -0.35);
+      CGPathAddLineToPoint(p, &m, -0.55, -0.35);
+      glassPart(g, p, 2, 0.95, 0.14 * s); CGPathRelease(p); }
+    { CGMutablePathRef p = CGPathCreateMutable();
+      { static const CGPoint q[] = {{-0.9, -0.35}, {-0.45, -0.72}, {-0.45, 0.02}}; CGPathAddLines(p, &m, q, sizeof q / sizeof *q); CGPathCloseSubpath(p); }
+      glassPart(g, p, 0, 0.95, 0 * s); CGPathRelease(p); }
+}
 static void iconSword(CALayer *g, CGFloat s) {
     CGFloat r = g.bounds.size.width / 2; CGAffineTransform m = CGAffineTransformScale(CGAffineTransformRotate(CGAffineTransformMakeTranslation(r, r), 45 * M_PI / 180), s, s);
     { CGMutablePathRef p = CGPathCreateMutable();
@@ -277,24 +320,6 @@ static void iconSword(CALayer *g, CGFloat s) {
       CGPathAddRoundedRect(p, &m, CGRectMake(-0.07, 0.38, 0.14, 0.4), 0.04, 0.04);
       CGPathAddEllipseInRect(p, &m, CGRectMake(-0.13, 0.73, 0.26, 0.26));
       glassPart(g, p, 0, 0.95, 0 * s); CGPathRelease(p); }
-}
-static void iconShield(CALayer *g, CGFloat s) {
-    CGFloat r = g.bounds.size.width / 2; CGAffineTransform m = CGAffineTransformScale(CGAffineTransformRotate(CGAffineTransformMakeTranslation(r, r), 0 * M_PI / 180), s, s);
-    { CGMutablePathRef p = CGPathCreateMutable();
-      CGPathMoveToPoint(p, &m, -0.72, -0.86);
-      CGPathAddQuadCurveToPoint(p, &m, 0, -1.02, 0.72, -0.86);
-      CGPathAddLineToPoint(p, &m, 0.72, -0.1);
-      CGPathAddQuadCurveToPoint(p, &m, 0.62, 0.62, 0, 1);
-      CGPathAddQuadCurveToPoint(p, &m, -0.62, 0.62, -0.72, -0.1);
-      CGPathCloseSubpath(p);
-      CGPathMoveToPoint(p, &m, -0.5, -0.62);
-      CGPathAddQuadCurveToPoint(p, &m, 0, -0.74, 0.5, -0.62);
-      CGPathAddLineToPoint(p, &m, 0.5, -0.1);
-      CGPathAddQuadCurveToPoint(p, &m, 0.43, 0.4, 0, 0.68);
-      CGPathAddQuadCurveToPoint(p, &m, -0.43, 0.4, -0.5, -0.1);
-      CGPathCloseSubpath(p);
-      { static const CGPoint q[] = {{0, -0.42}, {0.24, -0.1}, {0, 0.26}, {-0.24, -0.1}}; CGPathAddLines(p, &m, q, sizeof q / sizeof *q); CGPathCloseSubpath(p); }
-      glassPart(g, p, 1, 0.95, 0 * s); CGPathRelease(p); }
 }
 static void iconFairy(CALayer *g, CGFloat s) {
     CGFloat r = g.bounds.size.width / 2; CGAffineTransform m = CGAffineTransformScale(CGAffineTransformRotate(CGAffineTransformMakeTranslation(r, r), 0 * M_PI / 180), s, s);
@@ -377,23 +402,6 @@ static void iconBoot(CALayer *g, CGFloat s) {
       CGPathAddQuadCurveToPoint(p, &m, -0.8, -0.42, -0.9, -0.18);
       CGPathAddQuadCurveToPoint(p, &m, -0.75, 0.04, -0.3, 0.06);
       CGPathCloseSubpath(p);
-      glassPart(g, p, 0, 0.95, 0 * s); CGPathRelease(p); }
-}
-static void iconOcarina(CALayer *g, CGFloat s) {
-    CGFloat r = g.bounds.size.width / 2; CGAffineTransform m = CGAffineTransformScale(CGAffineTransformRotate(CGAffineTransformMakeTranslation(r, r), 0 * M_PI / 180), s, s);
-    { CGMutablePathRef p = CGPathCreateMutable();
-      CGPathMoveToPoint(p, &m, -0.9, 0.12);
-      CGPathAddCurveToPoint(p, &m, -0.9, -0.5, 0.2, -0.66, 0.66, -0.3);
-      CGPathAddCurveToPoint(p, &m, 0.94, -0.04, 0.8, 0.44, 0.34, 0.52);
-      CGPathAddCurveToPoint(p, &m, -0.22, 0.6, -0.9, 0.56, -0.9, 0.12);
-      CGPathCloseSubpath(p);
-      CGPathAddEllipseInRect(p, &m, CGRectMake(-0.62, -0.14, 0.2, 0.2));
-      CGPathAddEllipseInRect(p, &m, CGRectMake(-0.28, -0.3, 0.2, 0.2));
-      CGPathAddEllipseInRect(p, &m, CGRectMake(0.08, -0.26, 0.2, 0.2));
-      CGPathAddEllipseInRect(p, &m, CGRectMake(-0.23, 0.17, 0.18, 0.18));
-      glassPart(g, p, 1, 0.95, 0 * s); CGPathRelease(p); }
-    { CGMutablePathRef p = CGPathCreateMutable();
-      CGPathAddRoundedRect(p, &m, CGRectMake(0.56, -0.5, 0.3, 0.22), 0.06, 0.06);
       glassPart(g, p, 0, 0.95, 0 * s); CGPathRelease(p); }
 }
 static void iconChest(CALayer *g, CGFloat s) {
@@ -546,14 +554,17 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
     CGRect s = self.corner; CGFloat g = self.gu, R = CGRectGetMaxX(s), T = CGRectGetMinY(s), Bt = CGRectGetMaxY(s);
     CGFloat x = 0, y = 0, rr = 0;
     switch (b) {
-        // Built around Ocarina of Time (kid-with-sword-remake A7): B (sword) the large key where the thumb rests, and an arc 104 to 110 points around it in the order the
-        // thumb reaches: A (action, roll) inward and low, R (shield) and ZL (target) above it, held together in a fight, X (jump) at the outer edge; Y (items) apart, top right
-        case B_B: x = R - 100 * g; y = Bt - 96 * g; rr = 44; break;
+        // Built around Ocarina of Time's own Basic Controls (its pause menu; A12 corrects A7, which had B as the sword and R as a shield the game does not have): Y (attack) the
+        // large key where the thumb rests, and an arc 104 to 110 points around it in the order the thumb reaches: A (actions: roll, interact, hold to dash) inward and low,
+        // ZR (use item) and ZL (target, which also raises the shield) above it, held together to aim, X (jump) at the outer edge; R (quick select items) apart, top right;
+        // B (put away) small in the bottom right corner
+        case B_Y: x = R - 100 * g; y = Bt - 96 * g; rr = 44; break;
         case B_A: x = R - 200 * g; y = Bt - 69 * g; rr = 32; break;
-        case B_R: x = R - 190 * g; y = Bt - 159 * g; rr = 28; break;
+        case B_ZR: x = R - 190 * g; y = Bt - 159 * g; rr = 28; break;
         case B_ZL: x = R - 128 * g; y = Bt - 202 * g; rr = 28; break;
         case B_X: x = R - 46 * g; y = Bt - 188 * g; rr = 28; break;
-        case B_Y: x = R - 44 * g; y = Bt - 264 * g; rr = 24; break;
+        case B_R: x = R - 44 * g; y = Bt - 264 * g; rr = 24; break;
+        case B_B: x = R - 30 * g; y = Bt - 36 * g; rr = 22; break;
         case B_PLUS: x = R - 150 * g; y = T + N_TOP_Y * g; rr = N_TOP_R; break;   // A7: beside the menu and −, off the hearts at the top left
         default: x = R - 36 * g; y = T + N_TOP_Y * g; rr = N_TOP_R; break;   // −
     }
@@ -890,21 +901,22 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
         CGPathCloseSubpath(tp); glassPart(arm, tp, 0, 0.95, 0); CGPathRelease(tp);
         [_nat addSublayer:arm]; _nbase[b] = arm;
     }
-    static NSString *const chip[B_N] = { [B_A] = @"A", [B_B] = @"B", [B_X] = @"X", [B_Y] = @"Y", [B_R] = @"R", [B_ZL] = @"ZL", [B_PLUS] = @"+", [B_MINUS] = @"\u2212" };
+    static NSString *const chip[B_N] = { [B_A] = @"A", [B_B] = @"B", [B_X] = @"X", [B_Y] = @"Y", [B_R] = @"R", [B_ZL] = @"ZL", [B_ZR] = @"ZR", [B_PLUS] = @"+", [B_MINUS] = @"\u2212" };
     for (int i = 0; i < (int)(sizeof k_nat / sizeof *k_nat); i++) { int b = k_nat[i]; CGPoint c; CGFloat r; [self nat:b centre:&c radius:&r];
         CAShapeLayer *base = nil; CALayer *d = glassDisc(r, &base); d.position = c;
         CGFloat s = r * 0.52;   // the icon's half size: the letter chip keeps the lower right corner
         switch (b) {
-            case B_B: iconSword(d, r * 0.58); break;
-            case B_R: iconShield(d, s); break;
+            case B_Y: iconSword(d, r * 0.58); break;
+            case B_B: iconBack(d, s); break;
+            case B_ZR: iconBow(d, s); break;
+            case B_R: iconWheel(d, s); break;
             case B_ZL: iconFairy(d, s); break;
             case B_A: iconAction(d, s); break;
             case B_X: iconBoot(d, s); break;
-            case B_Y: iconOcarina(d, s); break;
             case B_PLUS: iconChest(d, s); break;
             default: iconMap(d, s); break;   // −
         }
-        glassChip(d, chip[b], b == B_R || b == B_ZL, scale);
+        glassChip(d, chip[b], b == B_R || b == B_ZL || b == B_ZR, scale);
         [_nat addSublayer:d]; _nk[b] = d; _nbase[b] = base;
         if (b == B_ZL) {   // the lock badge: a small disc with a padlock at the key's upper right
             CGFloat br = 10 * g; CAShapeLayer *mb = nil; CALayer *m = glassDiscFill(br, &mb, [UIColor colorWithRed:1 green:0.82 blue:0.3 alpha:0.9]);
