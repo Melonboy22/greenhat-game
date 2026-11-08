@@ -9031,12 +9031,22 @@ static int tex_storage_live(const tex_t *t) {
 }
 // One entry of a pool table: the resource ID of what the ID holds (0: nothing of the type). gone / transient count IDs without storage and retired ones
 static int pool_skip_retired(void); static uint64_t g_stat_pool_skipped;   // IDs pool_skip_retired gave the dummy
+// DM_TEX_LAZY=1 / 2 (off by default; the launcher's Potato mode sets 2), DM_TEX_LAZY_MIN_KB=<KB>: a pool walk makes no host texture for an ID whose texture has none yet (any ID, or with 2
+// only IDs in CPU_NO_ACCESS pools: render and depth targets) and whose storage is at least that size; the table entry is the dummy until a direct binding makes the texture. From the
+// Mighty Green Kokiri Kid line's v3 (f7072c6b, lazy textures), as the A line's older-iPhone settings run it (2, from 4 MB: foliage's mid-size textures popped in and out from 1 MB)
+static int g_tex_lazy = -1; static uint64_t g_stat_lazy_skip;
+static uint64_t g_tex_lazy_min;
+static int tex_lazy(void) { int v = g_tex_lazy; if (v < 0) { const char *e = getenv("DM_TEX_LAZY"); v = e ? atoi(e) : 0; const char *m = getenv("DM_TEX_LAZY_MIN_KB"); g_tex_lazy_min = m ? (uint64_t)atoll(m) << 10 : 0;
+    if (v) MLOG("DM_TEX_LAZY=%d: pool walks make no host texture for %s of %llu KB or more (DM_TEX_LAZY_MIN_KB)", v, v == 2 ? "IDs in CPU_NO_ACCESS pools" : "any ID", (unsigned long long)(g_tex_lazy_min >> 10)); g_tex_lazy = v; } return v; }
 static uint64_t pool_entry(int samp, int dtt, int id_, int *gone, int *transient) {
     if (id_ <= 0) return 0;
     if (samp) return id_ < g_nsreg && g_sreg_ok[id_] && samp_fast(id_) ? g_srid[id_] : 0;
     if (id_ >= g_ntreg || !g_treg[id_].ok) return 0;
     if (g_treg[id_].gone || (!g_treg[id_].view && !tex_storage_live(&g_treg[id_].t))) { ++*gone; return 0; }
     if (g_treg[id_].retired && !g_treg[id_].view && pool_skip_retired()) { g_stat_pool_skipped++; return 0; }   // pool_skip_retired: the dummy, not a texture made again
+    { int lz = tex_lazy(); if (lz && !g_treg[id_].view && g_treg[id_].t.L.size >= g_tex_lazy_min && (lz != 2 || (g_treg[id_].t.pool && (g_treg[id_].t.pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS))) && !tex_get(g_treg[id_].t.serial)) {
+        if (!(++g_stat_lazy_skip & (g_stat_lazy_skip - 1)) && g_stat_lazy_skip >= 64) MLOG("DM_TEX_LAZY: %llu pool table entries left without a host texture so far", (unsigned long long)g_stat_lazy_skip);
+        return 0; } }
     void *tv = NULL; uint64_t tr = tex_fast_rid(id_, &tv);
     if (!tv || ((__bridge id<MTLTexture>)tv).textureType != (MTLTextureType)dtt) return 0;
     *transient |= g_treg[id_].retired && g_treg[id_].transient_sub == g_sub_serial;

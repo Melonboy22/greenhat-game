@@ -1,4 +1,3 @@
-DM_PSO_WARM_ONLY	player	`1`: the pipeline prewarm builds its lists in the background on one utility-QoS thread and keeps nothing, only filling the system's Metal shader cache, so a pipeline the game asks for later is made from it in well under a millisecond; never before the first frame (overrides the prepare step)
 name	class	meaning
 DM_AB	diagnostic	`=<frames>` splits the run into phases of that many frames and alternates every switch set to `ab` (on in the odd phases); logs an `[ab]` line per phase with GPU and frame time and attachment traffic
 DM_ALIAS_SIZE	diagnostic	`=<bytes>` gives the guest an alias region of that size instead of the profile's (at least 256 MB, whole host pages; the heap and stacks stay as they are): `0x1000000000`, the Switch's 64 GB, holds what a game reserves unchanged; the NSP script's address region check sets it (Mac only: an iPhone has no room)
@@ -114,6 +113,7 @@ DM_NRO	switch	`0` turns off loading of the NRO modules the game's NRR files regi
 DM_NRO_CAPTURE	diagnostic	folder: a `nn::ro::LoadModule` with no rewritten copy writes the image to `<folder>/<SHA-256>.nro` and ends the run (the NSP script's capture of an NRO the game decodes at run time)
 DM_NRO_DIR	path	folder of NROs the shader split reads like `main`, and in which it finds a CRA archive's file table (the NSP script sets it for a captured NRO)
 DM_NVN_ALIAS_RETIRE	switch	`0` keeps shared textures until their storage is taken over or their pool goes, as before; by default, while the residency set holds more than 85 % of the working set, shared textures no live texture object has resolved to in 64 submissions are retired, the longest idle first, down to 75 % (`alias_retire_idle`)
+DM_NVN_ALIAS_SWEEP	switch	`=<fences>` (off by default; the Potato mode sets 600): at the memory readout, shared textures no texture object holds and nothing has looked up for that many fences are let go
 DM_NVN_ALLOCPROF	diagnostic	`=1` charges Metal allocation growth to each replayed op type and function, and logs command allocator sizes and each new texture (serial, size, format, storage)
 DM_NVN_API	switch	`=<major>.<minor>` overrides the NVN API version `nvnDeviceGetInteger` reports (by default decided by the SDK version or the profile's `device_api`: 55.15 for SDK 11 and later, 53.313 before)
 DM_NVN_BARRIER	switch	How draw passes are ordered: `full` (default) waits for all earlier GPU work, `game` only for the previous pass's fragment stage unless the game set a barrier, `ab` alternates with the `DM_AB` phases
@@ -191,7 +191,8 @@ DM_NVN_PREFETCH_CPS	diagnostic
 DM_NVN_PROF	diagnostic	`=1` wraps the implemented NVN functions in a timing wrapper and collects the time each takes during recording
 DM_NVN_PROGTRACE	diagnostic	`=<vertex keys,...>` logs matching ProgramSetShaders calls and their guest backtraces
 DM_NVN_REGLUM	diagnostic	`=x0,y0,x1,y1:<file>` (normalized coordinates): on every present records the present number, time, mean luminance and a grayscale thumbnail of that region, to check animation speed against frame rate
-DM_NVN_RES_LIMIT_MB	switch	`=<MB>` makes the GPU memory guard stop the game at that size instead of about 95% of Metal's working set, with the report of what the residency set holds (a low one tests the stop), and lets go of what it can from 84% of it; `0` turns the guard off
+DM_NVN_RES_EVICT_MB	switch	`=<MB>`: turns the GPU memory guard on and makes it let go of what it can (idle sharing entries, spare textures, staging blocks) from that size; it never stops the game by itself. The launcher's Potato mode sets 4400
+DM_NVN_RES_LIMIT_MB	switch	`=<MB>` makes the GPU memory guard stop the game at that size instead of about 95% of Metal's working set, with the report of what the residency set holds (a low one tests the stop), and lets go of what it can from 84% of it; `0` turns the guard off. The guard runs only when this or `DM_NVN_RES_EVICT_MB` is set (kid-with-sword-remake V18)
 DM_NVN_RP_AREA	switch	`0` makes passes on targets of 16 M pixels or more cover the whole target, as before; by default a draw pass that loads what it keeps stops at the far corner of its scissor when that is at most half the target
 DM_NVN_RT_ALIAS	diagnostic	
 DM_NVN_RT_CONTINUE	switch	`0` ends the pass whenever the game sets render targets, as before; by default SetRenderTargets naming the open pass's targets continues the pass
@@ -220,12 +221,11 @@ DM_NVN_TEXDUMP	diagnostic	`=<frame>:<path>`, `size=<W>x<H>:<path>` or `layers=<n
 DM_NVN_TEXINFO	diagnostic	`=<W>x<H>` logs storage and description of every texture of that size on first use, registration and initialization (pool, flags, packaged, non-zero bytes, swizzles)
 DM_NVN_TEXRAW	diagnostic	`=<serial>,…` or `info` (the textures `DM_NVN_TEXINFO` picked out): saves those textures' raw bytes at the `DM_NVN_TEXDUMP` frame, with a text header line
 DM_NVN_TEXSNAP	diagnostic	`=<in-frame pass index>,…`: with `DM_NVN_TEXDUMP`, copies those passes' colour attachments as they end and saves them with the end-of-frame dump
+DM_NVN_TEX_RECYCLE	switch	`1` puts a released texture of the fallback path into a bin, still resident, where the next texture of the same Metal description takes it; off by default (the launcher's Potato mode turns it on through `DM_NVN_TEX_RECYCLE_MB`), `0` keeps it off
+DM_NVN_TEX_RECYCLE_MB	switch	`=<MB>` (default 256): the most the bin of recycled textures (`DM_NVN_TEX_RECYCLE`) keeps, and setting it turns the bin on; it also keeps none older than 2 s, and none while the residency set is past 70 % of Metal's working set. The Potato mode sets 64
 DM_NVN_TEX_SOFT	diagnostic	
 DM_NVN_TEX_SOFT_ARRAYS	diagnostic	
 DM_NVN_TEX_SOFT_LEVELS	diagnostic	
-DM_NVN_TEX_MIP_SKIP	switch	`=<pixels>` (`1` = 512; off by default) makes CPU-written block-compressed 2D / array / cube textures with a mip chain and both sides at least that size without their finest level, a quarter of the memory, for devices whose GPU memory cannot hold a game's textures (nvn_mtl.m mip_skip)
-DM_NVN_TEX_RECYCLE	switch	`0` makes a new Metal texture for every texture the fallback path needs and frees each released one, as before; by default a released one goes into a bin, still resident, and the next texture of its Metal description takes it (nvn_mtl.m trc_*)
-DM_NVN_TEX_RECYCLE_MB	switch	`=<MB>` (default 256): the most the bin of recycled textures (`DM_NVN_TEX_RECYCLE`) keeps; it also keeps none older than 2 s, and none while the residency set is past 70 % of the working set
 DM_NVN_TREG_ID	diagnostic	`=<n>` logs every registration of texture ID n: what it holds from then on, and the frame being recorded
 DM_NVN_TSV	diagnostic	`=<path>` writes the per-frame NVN call table and timing rows (frame, metric, value) to a TSV, read by `scripts/bench.py`
 DM_NVN_TSV_CALLS	diagnostic	`0` makes `DM_NVN_TSV` write only the timing rows, without the call counts (about two thirds of the file)
@@ -270,6 +270,7 @@ DM_PATCH_FRONT	switch	`=<bytes>`: the size of the patch area right before the mo
 DM_PHONE_MOTION	switch	On iOS, whether the phone's own device motion drives player 1's six-axis sensor: `auto` (default) while no controller supplies fresh motion, `1` phone only, `0` never; each source keeps its own orientation
 DM_PICTURE_FIT	player	`fill` scales the 16:9 picture on the iPhone and iPad until it covers the screen in landscape and crops the edges (a portrait or tabletop split and a TV stay fitted); `fit` or unset, the largest 16:9 rectangle with black bars. Launcher and in-game menu setting
 DM_POOL_ANON	diagnostic	
+DM_POOL_ANON_MAX_MB	switch	`=<MB>` (off by default; the Potato mode sets 512): with the guest in files, a memory pool larger than that stays in the files instead of moving into anonymous memory
 DM_PREEMPT	switch	`0` / `1` overrides the profile's `core_preempt`: also check already-runnable higher-priority peers on the caller's core after every thread SVC
 DM_PRELOAD	diagnostic	Set: on the Mac, runs the host's early background loading (`dm_host_preload_start`) as the iOS app does, to exercise that path
 DM_PRESENT_FIFO	switch	`0` makes the display link take the newest queued frame each tick, as before; by default it shows frames in order, at most one tick behind
@@ -314,6 +315,7 @@ DM_PSO_PULL_ALL	diagnostic	`=1`: every draw that has a pulling pipeline draws wi
 DM_PSO_RECORD	path	`=<file>`: appends the shaders and pipelines used in the run to that file, for re-recording the prewarm manifest
 DM_PSO_USER	path	The per-device list of shaders and pipelines built on the spot (default: `pso_user.tsv` in the parent of `DM_SAVE`)
 DM_PSO_WAITLOG	diagnostic	`=1` logs each draw that waited more than 20 ms for its pipeline, with its shader pair and why no stand-in served it
+DM_PSO_WARM_ONLY	player	`1`: the pipeline prewarm builds its lists in the background on one utility-QoS thread and keeps nothing, only filling the system's Metal shader cache, so a pipeline the game asks for later is made from it in well under a millisecond; never before the first frame (overrides the prepare step)
 DM_QOS_EDGES	switch	`=e1,e2`: the Switch priority edges of `DM_QOS_MAP` (default `44,59`)
 DM_QOS_MAP	switch	`=1` maps guest thread priority to QoS class: ≤ 44 user-interactive, 45–59 user-initiated, the rest utility (off by default: every guest thread runs user-interactive)
 DM_REC	diagnostic	`=<file>`: writes player 1's physical input (keyboard, mouse touches, controllers; never `DM_KEYS` / `DM_CTL`) to the file as `DM_KEYS` steps in presented frames, for replaying a run (`DM_KEYS=@<file>`)
@@ -386,6 +388,8 @@ DM_TEST_SWKBD_LAG_MS	diagnostic	`=<ms>` sleeps that long between the keyboard ha
 DM_TEST_TRANSFORM_FEEDBACK	test	Path to the native t_transform_feedback executable used by the Python feedback tests
 DM_TEST_UP_LEAK	diagnostic	`=1` keeps the old upload staging block instead of retiring it, as before the fix, to measure the leak
 DM_TEST_UP_LOST	diagnostic	`=<batch index>` treats that batch of uploads as dropped, to exercise the re-upload path
+DM_TEX_LAZY	switch	`1` / `2` (off by default; the launcher's Potato mode sets `2`): a pool walk makes no host texture for an ID whose texture has none yet, any ID with `1`, only IDs in CPU_NO_ACCESS pools with `2`; the entry is the dummy until a direct binding makes the texture (`nvn_mtl.m` `pool_entry`)
+DM_TEX_LAZY_MIN_KB	switch	`=<KB>`: with `DM_TEX_LAZY`, only textures whose storage is at least that size are left without a host texture (the Potato mode sets 4096)
 DM_TEX_RELEASE	switch	`1` gives back the guest copy of a texture's storage in a `CPU_NO_ACCESS` pool once its upload (or its creation, for a GPU-only texture) has completed on the GPU: its whole pages become zero pages; `2` also releases still-protected pages of CPU-visible textures uploaded by the tracked path (a later CPU write faults and re-uploads as before); `probe` only counts; off by default ([memory](reference/memory.md#the-guest-copy-of-uploaded-textures-given-back))
 DM_TEX_RELEASE_METHOD	diagnostic	`free` releases with `madvise(MADV_FREE_REUSABLE)` instead of fresh zero pages (`DM_TEX_RELEASE`)
 DM_TEX_REL_DONOR	switch	`0` lets a texture made again over storage `DM_TEX_RELEASE` gave back read its zero pages; by default it is a GPU copy of the texture released there when that one has the same description, still has its host texture and its storage was not written since ([memory](reference/memory.md#the-guest-copy-of-uploaded-textures-given-back))
