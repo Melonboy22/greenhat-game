@@ -13014,9 +13014,16 @@ static void dispatch(const p_dispatch *dp) {
         // A chain whose first stages were skipped for MetalFX but that ends at another upscaler than the profile's last stage: that stage would read the skipped stages'
         // outputs, so the picture comes out black (Ocarina of Time at its own 1440x810: the chain ends at b106afba1a18faa9, not aad7ea7e5c02f41d; at a fixed 720p it ends at the listed
         // stage). The game's whole chain runs from the next frame on; this frame's picture is lost once
+        // kid-with-sword-remake V19: another of the game's upscaler shaders after the skipped stages is taken as the last stage too. The game picks its final network by the
+        // scale (Ocarina of Time: aad7ea7e at its own 1440x810, b106afba at 0.6, 8df148d5 at 0.667, d99fbeeb at 0.25), and each one MetalFX drew reads the first stage's input like
+        // the listed ones. At render scale 0.25 the chain ended at d99fbeeb, which was not listed, so the game's whole network ran every frame (logs 59, 60: GPU 12-13 ms, as at 0.6
+        // with MetalFX). Only when MetalFX refuses it does the game's chain run from the next frame on
         if (!role && g_up_chain_in && up_mfx_named(cs)) {
+            static char took[8][20]; static int nt; int k; for (k = 0; k < nt && strcmp(took[k], cs->key); k++) {}
+            if (k == nt && nt < 8) { strlcpy(took[nt++], cs->key, 20); MLOG("upscaler chain: %s ends it, taken as the last stage (not in the profile's list)", cs->key); }
+            if (!dp->ind && up_mfx_encode(cs)) { g_up_chain_in = 0; return; }
             g_up_chain_refused = 1; g_up_chain_in = 0;
-            MLOG("[RED] upscaler chain: it ended at %s, not at the profile's last stage, after its first stages were skipped; the game's chain runs from the next frame on", cs->key);
+            MLOG("[RED] upscaler chain: it ended at %s, not at the profile's last stage, after its first stages were skipped, and MetalFX refused it; the game's chain runs from the next frame on", cs->key);
         } }
     if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx)
     int own = dispatch_own();
