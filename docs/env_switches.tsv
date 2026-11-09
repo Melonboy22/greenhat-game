@@ -1,3 +1,4 @@
+DM_NVN_RC_LANDED	switch	`0` keeps drawing every draw under a render condition on a samples-passed report, as before; by default the condition is evaluated from the report's result once it has landed ([Occlusion conditions read once landed](reference/rendering.md#occlusion-conditions-read-once-landed))
 name	class	meaning
 DM_AB	diagnostic	`=<frames>` splits the run into phases of that many frames and alternates every switch set to `ab` (on in the odd phases); logs an `[ab]` line per phase with GPU and frame time and attachment traffic
 DM_ALIAS_SIZE	diagnostic	`=<bytes>` gives the guest an alias region of that size instead of the profile's (at least 256 MB, whole host pages; the heap and stacks stay as they are): `0x1000000000`, the Switch's 64 GB, holds what a game reserves unchanged; the NSP script's address region check sets it (Mac only: an iPhone has no room)
