@@ -6,6 +6,7 @@ DM_ALLOW_OTHER_METAL	switch	`1` lets `own_compilers.py` build the shader librari
 DM_AOC_DIR	path	Folder of add-on content: one numbered subfolder per DLC index holding that DLC's RomFS, reported by `aoc` and mounted read-only; the app, the Mac launcher and the NSP script set it when the build has DLC
 DM_AOC_OWNED	switch	`0` reports no add-on content even when `DM_AOC_DIR` has some, for runs without the DLC
 DM_APP_DM	path	Set by the iOS app of a game of several programs: the running program's `dm/p<N>` folder, where the settings screen finds its `launcher.json`
+DM_APP_GAME_MODE	switch	`1` when packing the Mac app (dm/mac/pack_app.py): the app asks for Game Mode and its launcher hands its process to the host (`DMLaunchExec`, launcher.c `DM_LAUNCH_EXEC`)
 DM_APP_VERSION	switch	Overrides the IPA's version in `build_ipa.sh`; by default it is the packed game's display version from its control data (the update's when one is packed)
 DM_AUDIO	switch	`1` plays audio through Core Audio, `0` uses the silent sink; real output is the default on iOS, the silent sink on the Mac (the Mac launcher sets `1`)
 DM_AUDIO_DUMP	diagnostic	`=<file>` writes every PCM block the game appends as is (16-bit, 48 kHz, channel count as in the OpenAudioOut log), to judge whether a sound played
@@ -138,10 +139,11 @@ DM_NVN_CBDUMP_KEY	diagnostic	`=<shader key>`: limits `DM_NVN_CBDUMP` to draws us
 DM_NVN_CBLOG	diagnostic	`=1` logs the command memory the game adds to command buffers (`AddCommandMemory`: the first 60, then every 500th) and the out-of-memory callbacks
 DM_NVN_CLEARLOG	diagnostic	`=1` logs the first 40 colour clears drawn as a triangle (inside a pass, with a partial channel mask or a partial scissor)
 DM_NVN_CMDSTAT	diagnostic	`=1` logs every 300 frames the command recording usage: bytes and records per frame, command memory segment sizes, out-of-memory callbacks, host segments, count and bytes per command type
-DM_NVN_COPY_ABSORB	switch	`0` keeps GPU copies into a packaged texture's storage from being absorbed into its dirty-page tracking (`pkg_copy_absorb`); on by default
 DM_NVN_COND_CONSERVATIVE	switch	`=1` every samples-passed render condition keeps drawing, as before the results were read once landed (occlusion culling only saves work): an A/B for draws that flicker when the frame time changes
+DM_NVN_COPY_ABSORB	switch	`0` keeps GPU copies into a packaged texture's storage from being absorbed into its dirty-page tracking (`pkg_copy_absorb`); on by default
 DM_NVN_COUNT	diagnostic	`1` counts every NVN call (the counting trampolines) and writes the per-frame call lines; off by default (on with a `DM_NVN_TSV` table that has call rows), the count is an atomic add all recording threads share
 DM_NVN_CPUPROF	diagnostic	1 records CPU wall/time/instruction totals by renderer operation; off by default.
+DM_NVN_CSH_BARRIER	diagnostic	`0` stops the compute hoist's scan at a game barrier between the draws of a pass, as before (cs_hoist_try)
 DM_NVN_CSH_PRESCAN	diagnostic	`0` runs the compute-hoist scan at every pass's first draw even when no dispatch follows (as before; for timing)
 DM_NVN_CS_HOIST	switch	`0` makes a compute dispatch between the draws of a pass end it (on by default: the dispatch runs ahead of the pass when that changes nothing the draws before it read)
 DM_NVN_CUT	switch	`=<draws>`: the replay commits its command buffer every that many draws, between passes (default 64; `0` one command buffer per submission, except the cut after a buffer-to-texture copy)
@@ -184,6 +186,7 @@ DM_NVN_GPU_STORAGE	switch	`0` stops what the GPU writes into a GPU texture in st
 DM_NVN_GPU_TS	switch	`segment` or `submission`: what timestamp reports record (GPU start / end of the segment holding each report, or one time for the whole submission), instead of the profile's `gpu_timestamps`
 DM_NVN_HILITE	diagnostic	`=<fragment shader key>,…`: those draws use a solid colour instead (magenta, green, cyan, yellow, blue, white in order), to tell wrong geometry from wrong shading
 DM_NVN_INDLOG	diagnostic	`=<n>`: the first n indirect draws (and those of pass-dumped frames) log their arguments at encode and as the GPU left them once the submission completed, with the first indices
+DM_NVN_IND_SPLIT	diagnostic	`0` lets an indirect dispatch join a copy encoder that already holds work again, so its group counts can be read before an earlier dispatch wrote them (to measure; Ocarina of Time's flower bushes showed holes)
 DM_NVN_ISOLATE_TASK	switch	`=1` puts each draw of Ocarina of Time's Hi-Z task a5288d0a6c4971fd in a command buffer of its own (the pass ends and the segment is committed before and after it), a workaround for its GPU hangs on Apple silicon (#1326, #1605); `=<keys>` names other task shaders; off by default
 DM_NVN_IXCLOG	diagnostic	`=<n>` logs the first n indirect draw and dispatch conversions (record to arguments) once the GPU has run them
 DM_NVN_KEYDUMP	diagnostic	`=<fs key>[:n[:every]]`: for up to n draws of that fragment shader (default 6), logs the pass dump binding lines plus vertex formats, vertex streams and uniform values; meant for devices
@@ -191,15 +194,15 @@ DM_NVN_LAZY_CLEAR	switch	`0` makes clears with no draw after them open a pass of
 DM_NVN_LOADPROBE	diagnostic	`=1`, `2` or `3`: attachments whose load is skipped are cleared to a sentinel colour (`3` NaN; `1` NaN for float formats) and the sentinel pixels left at pass end are counted (should be 0)
 DM_NVN_LOG	diagnostic	`=1` logs the creation of NVN objects
 DM_NVN_MAGSCAN	diagnostic	`=<fs key>[:every[:phase]]`: device self-check that reads each pass's colour attachments every `every` frames (default 30) and logs `[mag]` lines for solid magenta 16×16 blocks or non-finite pixels
-DM_NVN_PASSDUMP	diagnostic	`=<f>`, `<f1>-<f2>` or `every:<n>`: logs every render pass of those frames (attachments, clears, shader keys, bindings, draw state, presents, and the host function and line that ended each pass) for the `tbdr_*.py` tools
 DM_NVN_PASSDUMP	diagnostic	`=<f>`, `<f1>-<f2>` or `every:<n>`: logs every render pass of those frames (attachments, clears, shader keys, bindings, draw state, presents) for the `tbdr_*.py` tools
 DM_NVN_PASSDUMP_ALL	diagnostic	`=1` makes `DM_NVN_PASSDUMP` record every draw and binding change, not only the first per pass and stage, including copies and inline uniform updates
 DM_NVN_PASSGPU	diagnostic	`=<file>` writes the GPU time of each render and compute pass from stage-boundary timestamp counters (off under Metal 4); also gives each dispatch its own encoder
 DM_NVN_PASSGPU_SERIAL	diagnostic	`=1` makes each encoder on the main command buffer wait until all earlier work has finished, so `DM_NVN_PASSGPU` times read each pass's exclusive time (totals read high)
 DM_NVN_POOL_CHUNKS	switch	`0` wraps a memory pool of 512 MB or more whole in one buffer, as before; by default it is wrapped in overlapping 16 MB chunks made as draws reach them, so only the parts in use are wired
+DM_NVN_POOL_FIRST	diagnostic	`1` logs every first read through the pool table of a texture ID whose texture was not made yet (up to 32 a frame): what the read found (the ID's stand-in, or the dummy, which reads 0), the texture, its view and how many frames before it was registered; it also checks at each such read whether the storage the stand-in was made from has been written since. The totals go to the log every 300 frames without it (`pool stand-ins up to frame`)
 DM_NVN_POOL_HEAP	switch	`0` gives every shared render target of a CPU_NO_ACCESS pool a Metal allocation of its own, as before; by default the COMPRESSIBLE textures of such a pool (up to 1 GB) share one placement heap, each at its pool offset scaled by 1.25, so render targets an engine places over each other share memory as on NVN (`pool_heap_texture`)
 DM_NVN_POOL_SEEN_KEEP	switch	`0` clears a texture ID's "a shader read it" mark (pool_seen) whenever the game registers another texture into the ID, as before; by default an ID that held a made texture keeps the mark, so the next walk makes the replacement under the read budget instead of leaving it to read the dummy (black) at its first read (Ocarina of Time's castle town wall, rocks and trees black for one frame, twice, 4-5 frames apart, at streaming steps)
-DM_NVN_POOL_FIRST	diagnostic	`1` logs every first read through the pool table of a texture ID whose texture was not made yet (up to 32 a frame): what the read found (the ID's stand-in, or the dummy, which reads 0), the texture, its view and how many frames before it was registered; it also checks at each such read whether the storage the stand-in was made from has been written since. The totals go to the log every 300 frames without it (`pool stand-ins up to frame`)
+DM_NVN_POOL_SKIP_RETIRED	switch	`1` / `0` overrides the profile's `pool_skip_retired`: a finalized texture's ID with no view that no shader has read gets the dummy in pool tables instead of its texture made again
 DM_NVN_POOL_STANDIN	switch	`0` leaves the dummy (reads 0) in the pool tables for a texture the walk does not make, as before; by default, once the walk's budget is full, such a texture holds a stand-in until a shader reads its ID: its own smallest levels, or its last level cut down to every n-th block, so the first read draws the texture's colours coarse for one frame instead of black (Ocarina of Time's cliff beside the castle town wall dark for one frame when the game streams a sharper texture into it, issue #1969)
 DM_NVN_PREDICT	switch	`0` turns off the parallel precompile look-ahead: a pipeline miss compiles only the pipeline it needs
 DM_NVN_PREFETCH	switch	`0` turns off loading a program's shader libraries in the background when the game makes it (`nvnProgramSetShaders`); they load at its first draw instead
@@ -210,6 +213,7 @@ DM_NVN_RES_LIMIT_MB	switch	`=<MB>` makes the GPU memory guard stop the game at t
 DM_NVN_REUPLOADS	diagnostic	`=1` logs the first 400 re-uploads of packaged textures taken from their storage (shape, size, written pages and write sites)
 DM_NVN_RP_AREA	switch	`0` makes passes on targets of 16 M pixels or more cover the whole target, as before; by default a draw pass that loads what it keeps stops at the far corner of its scissor when that is at most half the target
 DM_NVN_RT_CONTINUE	switch	`0` ends the pass whenever the game sets render targets, as before; by default SetRenderTargets naming the open pass's targets continues the pass
+DM_NVN_RT_LOSSY	switch	`1` / `0` overrides the profile's `rt_lossy`: colour render targets drawn only as attachments, with their own allocation, use Metal's lossy compression (Apple GPU family 8 and later)
 DM_NVN_RT_RANGE	switch	`=1` (experimental, off by default; with `DM_NVN_TBDR=1`) keeps the pass open when the game sets the same colour and depth target again with a view that differs only in its level count
 DM_NVN_RT_RANGE_CHECK	diagnostic	With `DM_NVN_RT_RANGE=1` and `DM_NVN_PASSDUMP`, renders a candidate pass both ways in the same frame and logs and writes the comparison (`CHECK_RESULTS.tsv`, `[RED]` on a difference)
 DM_NVN_RT_RECYCLE	switch	`0` makes each render target in a GPU-only pool its own Metal allocation, as before; by default it is placed in a heap of its own, and a freed one's heap is reused by the next target it fits (`ab` alternates it with the `DM_AB` phases)
@@ -233,6 +237,9 @@ DM_NVN_TEXDUMP	diagnostic	`=<frame>:<path>`, `size=<W>x<H>:<path>` or `layers=<n
 DM_NVN_TEXINFO	diagnostic	`=<W>x<H>` logs storage and description of every texture of that size on first use, registration and initialization (pool, flags, packaged, non-zero bytes, swizzles)
 DM_NVN_TEXRAW	diagnostic	`=<serial>,…` or `info` (the textures `DM_NVN_TEXINFO` picked out): saves those textures' raw bytes at the `DM_NVN_TEXDUMP` frame, with a text header line
 DM_NVN_TEXSNAP	diagnostic	`=<in-frame pass index>,…`: with `DM_NVN_TEXDUMP`, copies those passes' colour attachments as they end and saves them with the end-of-frame dump
+DM_NVN_TEX_SOFT	switch	`1` / `0` overrides the profile's `tex_soft`: large block-compressed textures from the game files are kept without their finest level on the GPU (about three quarters of their bytes)
+DM_NVN_TEX_SOFT_ARRAYS	switch	`1` / `0` overrides the profile's `tex_soft_arrays`: whether 2D array textures are made soft too (with `tex_soft`)
+DM_NVN_TEX_SOFT_LEVELS	switch	`1` to `3` overrides the profile's `tex_soft_levels`: how many finest levels a soft texture leaves out (fewer where it would drop under 128 texels on its short side)
 DM_NVN_TREG_ID	diagnostic	`=<n>` logs every registration of texture ID n: what it holds from then on, and the frame being recorded
 DM_NVN_TSV	diagnostic	`=<path>` writes the per-frame NVN call table and timing rows (frame, metric, value) to a TSV, read by `scripts/bench.py`
 DM_NVN_TSV_CALLS	diagnostic	`0` makes `DM_NVN_TSV` write only the timing rows, without the call counts (about two thirds of the file)
