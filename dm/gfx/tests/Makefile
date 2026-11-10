@@ -311,6 +311,11 @@ check_t_ubp_running: t_ubp_running
 	./t_ubp_running
 t_direct_upload: t_direct_upload.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_direct_upload.m $(MTL_T_SRC) $(FW)
+t_tex_soft: t_tex_soft.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_tex_soft.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_tex_soft
+check_t_tex_soft: t_tex_soft
+	MTL_DEBUG_LAYER=1 ./t_tex_soft
 .PHONY: check_t_direct_upload
 check_t_direct_upload: t_direct_upload
 	MTL_DEBUG_LAYER=1 ./t_direct_upload

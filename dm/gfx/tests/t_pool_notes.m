@@ -47,6 +47,7 @@ static void same_as_whole(id<MTLBuffer> patched, const char *label) {
 }
 
 int main(void) { @autoreleasepool {
+    setenv("DM_NVN_POOL_SKIP_RETIRED", "0", 1);   // the host's own rule for retired IDs, whatever the profile sets (pool_skip_retired gives an unread one the dummy)
     mtl_init();
     uint8_t *ma = pages(), *mb = pages(), *mc = pages();
     // Pool A holds texture ID 1; pool B is a pool object whose storage the host does not map yet (a virtual pool before its first mapping): ID 2 there has no storage
