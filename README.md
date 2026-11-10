@@ -6,6 +6,12 @@ It is not an emulator: the game's own code runs directly on the Apple chip, with
 
 [Games](#games) · [Community front ends](#community-front-ends) · [Requirements](#requirements) · [How to play](#how-to-play) · [Discussions](#discussions) · [For developers](#for-developers)
 
+## This build: greenhat-game (branch `oot-plus`)
+
+Ocarina of Time for a 16 GB Mac: [swordboiMacNative](https://github.com/Fasen24-AI/swordboiMacNative) (`d57562fc`, described below) with [kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake)'s memory savers (`tex_soft`, `pool_skip_retired`, `rt_lossy`), the game's own 80 % frame by default, upstream pull requests #2226, #2249 and #2230, and opt-in frame generation (#2241, `DM_FRAMEGEN`, off by default). What each does and how to turn it off is in the [game's note](dm/games/0400486024DEC000/README.md#memory). Not yet played on a 16 GB Mac.
+
+**Credits:** the work of swordboiMacNative, kid-with-sword-remake (cheemu21) and the upstream authors whose pull requests each commit names; put together by Melonboy22 with Claude (Anthropic) as a contributor.
+
 ## This fork: swordboiMacNative
 
 This is [nxnative](https://github.com/seedds/nxnative) with one game in mind, The Legend of Zelda: Ocarina of Time (Switch 2, `0400486024DEC000` v131072) as a Mac app, built and played on an Apple silicon Mac. What is here is source code. There is no app to download and nothing from the game is in this repository, as upstream: you build the app yourself, from your own dump.
@@ -167,6 +173,7 @@ This project is built on other people's work ([licenses](dm/third_party/README.m
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**: SPIR-V to Metal Shading Language.
 - **[glslang](https://github.com/KhronosGroup/glslang)** compiles the GLSL of OpenGL games to SPIR-V for it.
 - **[MacNativeGames](https://github.com/ly05010419/MacNativeGames)** (MIT): the GPU widening of 8-bit indices and in-pass clears in `dm/gfx/nvn/nvn_mtl.m`, and the visibility-counter lowering in the shader translator.
+- **Claude** (Anthropic) contributed to the greenhat-game build: the ports of kid-with-sword-remake's memory savers onto this host, the `t_tex_soft` test, and the merges of the upstream pull requests above (commits marked `Co-Authored-By: Claude`).
 
 ## License
 
