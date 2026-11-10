@@ -40,6 +40,7 @@ def frame_step(ctx):
     emit(B(here(), site + 4))
     fs_put(site, [B(site, start)], "frame step: the frame-rate controller's interval and fps follow the host's vsyncs (state page target fps; 0 = the game's own choice)")
     render_scale(ctx)   # the launcher's Render scale (state +0x10), below
+    wide_view(ctx)      # the launcher's Wide view (state +0x100..+0x10f), below
 
 # Render scale (DM_RENDER_SCALE, state +0x10, dm/host/loader.c). The 3D views' sizes come from the scale the engine stores at main+0x31d3f48 (str s0,[x20,#0xe5c], found by
 # upstream PR #1497), but that store and the size loop after it (main+0x31d3fd8, which clears the "scale changed" bit 3 of [x20+0xe2c] at main+0x31d40b4) run only in a frame
@@ -106,7 +107,31 @@ def render_scale(ctx):
 
     ctx.render_scale = 1
 
+# Wide view (DM_WIDE_VIEW, a launcher setting; X1): the game sizes its output from fixed constants, so a screen wider than 16:9 shows bars. These stubs take the widths from the state
+# page, written at each start from the screen's shape (loader.c dm_fps_state_apply), so the view widens (Hor+) and nothing stretches; 0 there (16:9, or the setting off) runs the game's
+# own constant. Sites from nxnative PR #1460 by vladbondarenko97, which cut them at build time (DM_ULTRAWIDE); here they are stubs that read the state page,
+# so the setting needs no rebuild. v131072 only (this FRAME_STEP's build). Each stub writes only the register the constant loads
+wide_sites = [(0x1202ee0, 0xD2814008, 0x100, 8, 'graphics setup output width'), (0x31f39f4, 0xD2814008, 0x100, 8, 'docked render width'),
+              (0x31f3a00, 0xD280F008, 0x104, 8, 'handheld render width'), (0xecbc80, 0x52A8A409, 0x108, 9, 'output width as a float')]
+def wide_view(ctx):
+    here, emit = ctx.here, ctx.emit
+    for site, orig, off, rd, what in wide_sites:
+        ctx.site(site, orig.to_bytes(4, 'little').hex())
+        start = here(); emit(ADRP(rd, here(), ctx.state))
+        emit(0xB9400000 | (off // 4) << 10 | rd << 5 | rd)      # ldr w<rd>,[x<rd>,#off]
+        emit(0x35000040 | rd)                                   # cbnz w<rd>,the branch back
+        emit(orig); emit(B(here(), site + 4))
+        ctx.put(site, [B(site, start)], f'wide view: {what} from the state page (0: the game\'s own)')
+    # The output resolution table (main+0x3f58540, read here by the display mode, a leaf ending in ret: x9..x11 are free): each entry's width from its height and the screen's ratio
+    site = 0x112c604
+    ctx.site(site, '287968f8')   # ldr x8,[x9,x8,lsl #3]: width in the low word, height in the high one
+    start = here(); emit(0xF8687928); emit(ADRP(9, here(), ctx.state))
+    for w in (0xB9410D2A, 0x340000EA, 0xD360FD0B, 0x9B0B7D4A, 0x9142014A, 0xD354FD4A, 0xD37CED4A, 0xB3407D48): emit(w)   # ratio (16.16); if 0 skip; height * ratio, to a multiple of 16; width
+    emit(B(here(), site + 4))
+    ctx.put(site, [B(site, start)], 'wide view: output resolution table width from its height')
+
 FRAME_STEP = {'e0f3ccfaf50065ae4ea01eb5aeb13b1a': frame_step}
+CAPABILITIES = {'e0f3ccfaf50065ae4ea01eb5aeb13b1a': ('WIDE_VIEW',)}   # the launcher's Wide view row (settings.tsv fixups:WIDE_VIEW)
 
 # How general each patch is and could be (dm/tools/docs_patches.py "Binding", listed in docs/agents/game-patches.md): what, its binding now, the loosest it could have (goal),
 # purpose, why; blocked or kept: why the gap stays open (cannot close yet, or left open on purpose); checked: what was checked on game files (else a judgement)

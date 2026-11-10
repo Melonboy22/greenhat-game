@@ -116,6 +116,7 @@ DM_NRO_DIR	path	folder of NROs the shader split reads like `main`, and in which 
 DM_NVN_ALIAS_RETIRE	switch	`0` keeps shared textures until their storage is taken over or their pool goes, as before; by default, while the residency set holds more than 85 % of the working set, shared textures no live texture object has resolved to in 64 submissions are retired, the longest idle first, down to 75 % (`alias_retire_idle`)
 DM_NVN_ALIAS_SWEEP	switch	`=<fences>` (off by default; the Potato mode sets 600): at the memory readout, shared textures no texture object holds and nothing has looked up for that many fences are let go
 DM_NVN_ALLOCPROF	diagnostic	`=1` charges Metal allocation growth to each replayed op type and function, and logs command allocator sizes and each new texture (serial, size, format, storage)
+DM_NVN_ALLOC_CAP	switch	command allocators and visibility buffers the main submission may have in flight, 3-32 (default 16; 8 was the fixed cap before X1): at 8, Ocarina of Time's Hyrule Field blocked the submit thread
 DM_NVN_API	switch	`=<major>.<minor>` overrides the NVN API version `nvnDeviceGetInteger` reports (by default decided by the SDK version or the profile's `device_api`: 55.15 for SDK 11 and later, 53.313 before)
 DM_NVN_BARRIER	switch	How draw passes are ordered: `full` (default) waits for all earlier GPU work, `game` only for the previous pass's fragment stage unless the game set a barrier, `ab` alternates with the `DM_AB` phases
 DM_NVN_BF_WANT	path	`=<file>`: appends the key of each fragment shader whose passes could not be merged for lack of a readable-tile version to that file, once per key
@@ -197,6 +198,7 @@ DM_NVN_RES_EVICT_MB	switch	`=<MB>`: turns the GPU memory guard on and makes it l
 DM_NVN_RES_LIMIT_MB	switch	`=<MB>` makes the GPU memory guard stop the game at that size instead of about 95% of Metal's working set, with the report of what the residency set holds (a low one tests the stop), and lets go of what it can from 84% of it; `0` turns the guard off. The guard runs only when this or `DM_NVN_RES_EVICT_MB` is set (kid-with-sword-remake V18)
 DM_NVN_RP_AREA	switch	`0` makes passes on targets of 16 M pixels or more cover the whole target, as before; by default a draw pass that loads what it keeps stops at the far corner of its scissor when that is at most half the target
 DM_NVN_RT_ALIAS	diagnostic	
+DM_NVN_RT_RECYCLE	switch	`0` makes each render target in a GPU-only pool its own Metal allocation, as before; by default it is placed in a heap of its own, and a freed one's heap is reused by the next target it fits (`ab` alternates it with the `DM_AB` phases)
 DM_NVN_RT_CONTINUE	switch	`0` ends the pass whenever the game sets render targets, as before; by default SetRenderTargets naming the open pass's targets continues the pass
 DM_NVN_RT_DROP	diagnostic	
 DM_NVN_RT_DROP_IDLE	diagnostic	
@@ -412,6 +414,8 @@ DM_WATCH	diagnostic	`=<s>` dumps all threads after that many seconds (SIGALRM) a
 DM_WATCH_SAMPLE	diagnostic	`=<path>` (Mac): when the stall watchdog fires, samples the process for 1 s with `/usr/bin/sample` and writes the thread stacks to that path
 DM_WATCH_STALL	diagnostic	`=<s>`: when the frame loop makes no progress for that long (default 15 with `DM_WATCH`), logs a red line, dumps the threads and exits
 DM_WEB_LOG	diagnostic	`1` logs each key an offline HTML page is given and where the focus is after it
+DM_WIDE_ASPECT	switch	the screen's width / height for Wide view, 1.8 to 2.6; the iOS front end sets it from its window when `DM_WIDE_VIEW=1`
+DM_WIDE_VIEW	switch	`1`: games with wide-view stubs (Ocarina of Time v131072, patches.py wide_view) render the screen's shape instead of 16:9 (launcher: Wide view)
 DM_WINDOW	switch	When set (to any value, `0` included) opens a Mac window with keyboard and controller input; unset runs headless with the guest on the current thread; the Mac launcher sets it
 DM_WINDOW_TOP	diagnostic	`1` (Mac, with `DM_WINDOW`) orders the game window in front without activating it and keeps it above other apps' windows, so a covered window does not slow the run; `regress.py` sets it
 DM_XCODE_DERIVED_DATA	path	Xcode derived data folder for `build_ipa.sh` (default `$W/build/ios/xcode-dd`); the NSP script points it into the game's build folder

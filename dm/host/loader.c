@@ -324,6 +324,15 @@ void dm_fps_state_apply(void) {
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = DM_GAME_RENDER_SCALE_DEFAULT;   // unset: the profile's render_scale_default (1.0 when it has none)
     if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.25f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.25 to 1.0; using the game's default", rs); sc = DM_GAME_RENDER_SCALE_DEFAULT; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
+    // Wide view (Ocarina of Time's patches.py wide_view; nxnative PR #1460 by vladbondarenko97, as a launcher setting): DM_WIDE_VIEW=1 with DM_WIDE_ASPECT, the
+    // screen's width / height from 1.8 to 2.6 (set by the iOS front end), makes the game's output and render widths follow the screen, multiples of 16: +0x100 u32 the 1440-high width,
+    // +0x104 the 1080-high width, +0x108 the former as a float, +0x10c the ratio in 16.16. 0 = 16:9. The present takes the picture's shape from mtl_present_screen, else it lays it out 16:9
+    { const char *wv = getenv("DM_WIDE_VIEW"), *wa = getenv("DM_WIDE_ASPECT"); char *wend = NULL; float wr = wa ? strtof(wa, &wend) : 0;
+      if (wv && !strcmp(wv, "1") && wa && wend != wa && !*wend && wr >= 1.8f && wr <= 2.6f) {
+          uint32_t w1 = (uint32_t)(1440.0f * wr / 16.0f + 0.5f) * 16, w2 = (uint32_t)(1080.0f * wr / 16.0f + 0.5f) * 16, q = (uint32_t)(wr * 65536.0f + 0.5f); float wf = (float)w1;
+          memcpy(dm_fps_state + 0x100, &w1, 4); memcpy(dm_fps_state + 0x104, &w2, 4); memcpy(dm_fps_state + 0x108, &wf, 4); memcpy(dm_fps_state + 0x10c, &q, 4);
+          extern void mtl_present_screen(uint32_t w, uint32_t h); mtl_present_screen(w1, 1440);
+          LOG("%s: wide view: %.3f:1, output %ux1440, handheld %ux1080 (DM_WIDE_VIEW)", g_fps_mod, wr, w1, w2); } }
     // Screen shape: DM_SCREEN_ASPECT, the screen's width / height between 1.3 and 1.77, makes the builds with screen-shape stubs
     // (Breath of the Wild 1.9.0's patches.py) render that shape: the output keeps its width (1920) and takes the height that gives the ratio, a multiple of 48 so the
     // 2/3-size layout space (1280 wide) stays whole: 1.43 → 1920x1344 and 1280x896. State +0x48 u32 output height, +0x4c u32 layout height, +0x50 its float; 0 = 16:9
@@ -334,6 +343,7 @@ void dm_fps_state_apply(void) {
         else {
             uint32_t oh = (uint32_t)(1920.0f / a / 48.0f + 0.5f) * 48, lh = oh * 2 / 3; float lf = (float)lh;
             memcpy(dm_fps_state + 0x48, &oh, 4); memcpy(dm_fps_state + 0x4c, &lh, 4); memcpy(dm_fps_state + 0x50, &lf, 4);
+            extern void mtl_present_screen(uint32_t w, uint32_t h); mtl_present_screen(1920, oh);   // the picture's shape for a texture that follows it (nvn_mtl.m present_shape)
             const char *ms = getenv("DM_SCREEN_ASPECT_SITES"); uint32_t mask = ms ? (uint32_t)strtoul(ms, NULL, 0) : 0xffffffffu;   // the stubs of the game's own conversions, one bit each (+0x54)
             memcpy(dm_fps_state + 0x54, &mask, 4);
             if (ms) LOG("%s: screen shape: conversion sites %#x (DM_SCREEN_ASPECT_SITES)", g_fps_mod, mask);
