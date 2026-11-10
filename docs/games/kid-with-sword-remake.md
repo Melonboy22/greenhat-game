@@ -367,4 +367,33 @@ All on the v1 dump (v131072). Mac runs were capped by a memory guard (the game k
 
 ## Credits
 
-The upstream nxnative project and its contributors, the authors of the Ocarina of Time branch and the pull requests above, and the projects nxnative is built on ([Acknowledgements](../../README.md#acknowledgements)). This fork is not affiliated with Nintendo.
+This fork runs on [nxnative](https://github.com/seedds/nxnative) and the projects it is built on ([Acknowledgements](../../README.md#acknowledgements)). Work by these people is in this fork's builds:
+
+- **seedds**: nxnative itself, and the Ocarina of Time fixes taken from it:
+  - shader translation: LDSM fences, raw global memory lookups, invariant mesh positions, extended multiplies;
+  - render-target recycling, texture IDs marked gone with their pool, and textures of a resolution family made uncompressed;
+  - audio renderers on their own PCM blocks, Core Haptics stops survived, and growing write lists.
+- **ChiefSZ13**: the Ocarina of Time profile and bring-up (title screen, Kokiri Forest, bindless pool tables patched instead of rebuilt).
+- **Pedro Nascimento (lunks)**:
+  - Ampere F2IP and task shader payloads, float add atomics, NDSR packs read entry by entry, and the raw global memory pool table;
+  - the ocarina note crash fix (input streams), the GPU memory guard, retired pool buffers, depth-writing pool draws, and texture IDs gone with their pool.
+- **Xipzer**: the frame workgroup (Deadline boost), argument tables copied for uniform-only changes, snapshot and uniform-lookup speedups, and guest thread wakes after the lock.
+- **nanotchec**: indirect mesh draws and atomic image views on Metal, and wide GPU writes kept across submissions.
+- **Adrian Smith**: damaged RomFS `.zs` files served from the profile's substitute, counting probes, and shader-code pools kept out of the residency set.
+- **Romen Adama Caetano Ramírez**: compute pipelines taken from the pipeline archives.
+- **Travis (travislikestocode)**: the first ocarina note crash fix.
+- **vladbondarenko97**: the wide-screen sizes behind Wide view (nxnative PR #1460).
+- **uncraftablexd**: the frame step's GPU-idle rule (nxnative PR #1942).
+- **mmkzer0**: the Metal 4 specialization descriptor fix that keeps iOS 26.0 from crashing.
+- **Nimesh Ambepitiya**: raw global memory lookups.
+- **MetaIX**: LDSM fences.
+- **TheGoldfish11**: resolution-family textures made uncompressed.
+- **Oliver Ames**: Core Haptics stops survived.
+- **David Padron-Harris**: growing write lists.
+- **zatteogit**: one of the nxnative fixes in X1.
+- **tut**: lazy textures for pool walks.
+- **the author of the oot2 branch**: occlusion conditions read once landed, shared-memory byte stores, and raw reads that keep their pool range.
+- **NotRexed's [Hookshot](https://github.com/NotRexed/Hookshot)**: the idea of frame generation for this game. No code was taken (Hookshot is GPL-3.0).
+- **Apple's MetalFX**: the frame interpolator and the scalers.
+
+This fork is not affiliated with Nintendo.
