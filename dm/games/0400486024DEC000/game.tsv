@@ -38,6 +38,16 @@ mem_map_limit	on
 mem_stack	0x10000000
 app_pool	0x240000000
 sys_resource	0x3000000
+# Memory savers for a 16 GB Mac, from kid-with-sword-remake (a758ea2d), which plays with them on such a Mac; not measured on this branch's host. GPU memory guard as before (the system's side too).
+# Large block-compressed textures from the game files kept without their finest level on the GPU (nvn_mtl.m tex_soft): about three quarters of each such texture's GPU bytes, a little
+# softer up close. 2D arrays stay whole: kid-with-sword's notes have the reflection probes' water under Kokiri Forest's canopy showing flat sky with them soft. DM_NVN_TEX_SOFT=0 turns it off
+tex_soft	on
+tex_soft_arrays	off
+# A finalized texture's ID that no shader has read gets the dummy instead of its texture made again (nvn_mtl.m pool_skip_retired; upstream PR #1393: GPU allocated 11.4 GB against 13.2
+# at the Kokiri Forest door on an older host). DM_NVN_POOL_SKIP_RETIRED=0 turns it off
+pool_skip_retired	on
+# Colour render targets drawn only as attachments, with their own allocation, kept with Metal's lossy compression (nvn_mtl.m rt_lossy; about 100 MB at 720p on kid-with-sword). DM_NVN_RT_LOSSY=0 turns it off
+rt_lossy	on
 
 # ---- Shader split (shader_split.py) ----
 shader_groups	/Shader/=shader /Effect/=effect /Lib/=lib /UI/=layout
@@ -49,7 +59,8 @@ shader_note	Ocarina of Time shaders
 fps_target	60
 op_mode	handheld
 dynamic_resolution	on
-output	native
+# The game's own 80 % frame scaled up, as on the console, rather than native: smaller 3D targets for a 16 GB Mac (the launcher's Output still offers Native)
+output	game
 upscaler	metalfx
 fps_hold	off
 

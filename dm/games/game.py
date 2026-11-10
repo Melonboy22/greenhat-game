@@ -225,6 +225,16 @@ def header_one(g):
     if outp not in ('game', 'native'): sys.exit(f'{g.id}: output must be game or native: {outp}')
     upd = g.get('upscaler', 'game')   # the launcher's Game's upscaler as the game is first started (nvn_mtl.m up_mfx_on; DM_UPSCALER overrides): game = its own network, metalfx, off = skipped
     if upd not in ('game', 'metalfx', 'off'): sys.exit(f'{g.id}: upscaler must be game, metalfx or off: {upd}')
+    rtl = g.get('rt_lossy', 'off')   # colour render targets the GPU writes only as attachments made with Metal's lossy compression (about half the memory; nvn_mtl.m rt_lossy; DM_NVN_RT_LOSSY overrides): on / off
+    if rtl not in ('on', 'off'): sys.exit(f'{g.id}: rt_lossy must be on or off: {rtl}')
+    psr = g.get('pool_skip_retired', 'off')   # pool tables give a retired texture ID with no view that no shader has read the dummy instead of a texture made again (nvn_mtl.m pool_entry; DM_NVN_POOL_SKIP_RETIRED overrides): on / off
+    if psr not in ('on', 'off'): sys.exit(f'{g.id}: pool_skip_retired must be on or off: {psr}')
+    tsf = g.get('tex_soft', 'off')   # large block-compressed packaged textures kept without their finest level (nvn_mtl.m tex_soft; DM_NVN_TEX_SOFT overrides): on / off
+    if tsf not in ('on', 'off'): sys.exit(f'{g.id}: tex_soft must be on or off: {tsf}')
+    tsa = g.get('tex_soft_arrays', 'on')   # with tex_soft: whether 2D arrays are soft too (nvn_mtl.m tex_soft; DM_NVN_TEX_SOFT_ARRAYS overrides): on / off
+    if tsa not in ('on', 'off'): sys.exit(f'{g.id}: tex_soft_arrays must be on or off: {tsa}')
+    tsl = g.get('tex_soft_levels', '1')   # with tex_soft: how many finest levels a soft texture leaves out, 1 to 3 (nvn_mtl.m tex_soft_n; DM_NVN_TEX_SOFT_LEVELS overrides)
+    if tsl not in ('1', '2', '3'): sys.exit(f'{g.id}: tex_soft_levels must be 1, 2 or 3: {tsl}')
     pm = g.get('perf_mode', 'follow')   # the performance mode reported (hle_oe.c): follow = the operation mode's (Boost docked, Normal handheld), boost = Boost always
     if pm not in ('follow', 'boost'): sys.exit(f'{g.id}: perf_mode must be follow or boost: {pm}')
     dmo = g.get('depth_mode', 'gl')   # the NVN depth mode the game sets, for the pipeline archive made offline (dm/gfx/tools/pso_offline.py; the host follows the game at run time): gl / zero
@@ -270,6 +280,8 @@ def header_one(g):
          f'#define DM_GAME_PAD_LAYOUT {("simple", "full", "touch").index(pl)}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
          f'#define DM_GAME_START_DYNAMIC_RESOLUTION {int(dyr == "on")}', f'#define DM_GAME_START_OUTPUT {q("native" if outp == "native" else "0")}', f'#define DM_GAME_START_UPSCALE {q(upd)}',
+         f'#define DM_GAME_RT_LOSSY {int(rtl == "on")}', f'#define DM_GAME_POOL_SKIP_RETIRED {int(psr == "on")}',
+         f'#define DM_GAME_TEX_SOFT {int(tsf == "on")}', f'#define DM_GAME_TEX_SOFT_ARRAYS {int(tsa == "on")}', f'#define DM_GAME_TEX_SOFT_LEVELS {int(tsl)}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
          f'#define DM_GAME_SHADER_KEY_SKIP_OFF {sko:#x}', f'#define DM_GAME_SHADER_KEY_SKIP_LEN {skl:#x}',

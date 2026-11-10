@@ -2584,7 +2584,7 @@ void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); snap_dra
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[164];   // one past the highest key: a new key raises this, and the macro refuses to compile otherwise
+static int g_red_once[166];   // one past the highest key: a new key raises this, and the macro refuses to compile otherwise
 #define RED_ONCE(k, ...) do { _Static_assert((k) < sizeof g_red_once / sizeof *g_red_once, "a RED_ONCE key past g_red_once: raise its size"); if (!g_red_once[k]++) MLOG("[RED] " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
 // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
@@ -3097,6 +3097,36 @@ static int tex_atomic_alias(id<MTLTexture> base) {
         || pf == MTLPixelFormatRG16Unorm || pf == MTLPixelFormatRG16Snorm || pf == MTLPixelFormatRG16Uint || pf == MTLPixelFormatRG16Sint || pf == MTLPixelFormatRG16Float || pf == MTLPixelFormatR32Float;
     return bytes32 && (base.textureType == MTLTextureType2D || base.textureType == MTLTextureType2DArray) && base.sampleCount == 1 && base.storageMode == MTLStorageModePrivate && !base.buffer && !base.isSparse;
 }
+// Profile tex_soft (DM_NVN_TEX_SOFT=0 / 1; from kid-with-sword-remake a758ea2d, which took it from the plumber-racer-2 fork's Mario Kart World iPhone port): a large block-compressed texture
+// the game loaded from its files is kept without its finest level on the GPU: its host texture is that of level 1 (half the size, one level less, sampled through the same normalized
+// coordinates). About three quarters of the texture's GPU bytes. Level numbers the game gives (views, copies) are one lower here: tex_soft_level. Reads of the size in a shader see the
+// smaller size. A texture the game copies from or reads back stays whole (soft_harden), as the copy needs what the game has at that level
+static nvn_hmap g_soft_hard = {.klen = 8};   // storage addresses of textures kept whole (soft_harden), under g_smu
+static int tex_soft(const tex_t *t) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_TEX_SOFT"); on = e && *e ? atoi(e) != 0 : DM_GAME_TEX_SOFT; if (on) MLOG("large block-compressed textures kept without their finest level (profile tex_soft; DM_NVN_TEX_SOFT=0 turns it off)"); }
+    // DM_NVN_TEX_SOFT_ARRAYS=0 (profile tex_soft_arrays off): 2D arrays stay whole too. Ocarina of Time's reflection probes are one: its water under Kokiri Forest's canopy showed flat sky
+    static int arrays = -1; if (arrays < 0) { const char *e = getenv("DM_NVN_TEX_SOFT_ARRAYS"); arrays = e && *e ? atoi(e) != 0 : DM_GAME_TEX_SOFT_ARRAYS; }
+    if (!on || !t->has_layout || !t->mem || t->d.levels < 3 || (t->d.target != 1 && (t->d.target != 4 || !arrays))) return 0;
+    if (t->pool && t->pool->magic == MAGIC('P', 'O', 'O', 'L') && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL)) return 0;   // a sparse pool's: tiles that follow the game's mappings
+    if (MAX(t->d.width, t->d.height) < 512 || MIN(t->d.width, t->d.height) < 256) return 0;
+    int bw, bh; if (!nvn_fmt_bpb(t->d.format, &bw, &bh) || bw < 2) return 0;
+    uint64_t k = (uint64_t)(uintptr_t)t->mem; pthread_mutex_lock(&g_smu); int hard = nvn_hm_get(&g_soft_hard, &k) != NULL; pthread_mutex_unlock(&g_smu);
+    return !hard;
+}
+// How many of a soft texture's finest levels are left out: DM_NVN_TEX_SOFT_LEVELS (profile tex_soft_levels, 1 by default, at most 3), fewer where the texture would drop under
+// 128 texels on its short side or under 2 levels
+static unsigned tex_soft_n(const tex_t *t) {
+    static int want = -1; if (want < 0) { const char *e = getenv("DM_NVN_TEX_SOFT_LEVELS"); want = e && *e ? atoi(e) : DM_GAME_TEX_SOFT_LEVELS; if (want < 1) want = 1; if (want > 3) want = 3;
+        if (want > 1) MLOG("soft textures: %d finest levels left out (tex_soft_levels)", want); }
+    if (!t || !tex_soft(t)) return 0;
+    unsigned n = 1; while (n < (unsigned)want && t->d.levels > n + 2 && (MIN(t->d.width, t->d.height) >> (n + 1)) >= 128) n++;
+    return n;
+}
+// A level the game names, as the host texture's level: 0 when there is none (a left-out level of a soft texture)
+static int tex_soft_level(const tex_t *t, unsigned *level) { unsigned k = tex_soft_n(t); if (!k) return 1; if (*level < k) return 0; *level -= k; return 1; }
+// The same for a host texture in hand: only a texture made soft (narrower than the game's) has its levels moved. A texture that passes tex_soft but was not made from the game's
+// files (a GPU-written BC render target, bcrt_attach) has every level
+static int tex_soft_level_mt(const tex_t *t, id<MTLTexture> mt, unsigned *level) { if (!t || !mt || mt.width >= MAX(t->d.width, 1u)) return 1; return tex_soft_level(t, level); }
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "texture format %#x has no Metal equivalent (first case)", t->d.format); return nil; }
@@ -3106,6 +3136,7 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     d.pixelFormat = (MTLPixelFormat)pf;
     d.width = t->d.width ? t->d.width : 1; d.height = t->d.height ? t->d.height : 1; d.depth = 1; d.arrayLength = 1;
     d.mipmapLevelCount = t->d.levels ? t->d.levels : 1;
+    if (packaged && tex_soft(t)) { unsigned k = tex_soft_n(t); d.width = MAX(d.width >> k, 1u); d.height = MAX(d.height >> k, 1u); d.mipmapLevelCount -= k; }
     switch (t->d.target) {
         // 1D / 1D array are created as one-row 2D / 2D array textures: translated shaders never declare texture1d (0 in all five games' libraries) and always sample them as 2D; a Metal 1D texture bound to a texture2d argument is a type mismatch with undefined reads.
         // Super Mario 3D World + Bowser's Fury's material shaders sample 64x1 R32F 1D lookup tables heavily every frame (on Maxwell a 2D sample of a 1D texture reads that one row)
@@ -3566,7 +3597,8 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     d.usage |= keep & (MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
     int rb_shift = rb_packed_shift(t->d.format);   // the RGB565 family is repacked into Metal's order on the CPU (rb_packed_shift)
     int linear = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;   // linear storage no view could take (linear_fit): its rows are copied on the CPU
-    int direct = !linear && !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
+    unsigned sk = tex_soft_n(t);   // source level = host level + sk (tex_soft)
+    int direct = !sk && !linear && !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
     if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;
     id<MTLTexture> mt = reuse && reuse.pixelFormat == d.pixelFormat && reuse.width == d.width && reuse.height == d.height && reuse.mipmapLevelCount == d.mipmapLevelCount && reuse.textureType == d.textureType
                         && (reuse.usage & d.usage) == d.usage
@@ -3585,7 +3617,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;   // a cube array's depth counts layer-faces (tex_desc)
     size_t total = 0;
     for (unsigned l = 0; l < d.mipmapLevelCount; l++) {
-        uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
+        uint32_t w = MAX(t->d.width >> (l + sk), 1u), h = MAX(t->d.height >> (l + sk), 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
         total += (size_t)((w + bw - 1) / bw) * bpb * ((h + bh - 1) / bh) * z * layers;
     }
     g_bp_up_bytes += total;
@@ -3621,11 +3653,11 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         if (upsrc) { uint64_t mo2; id<MTLBuffer> u2 = up_big_src((uint64_t)t->mem, t->L.size, &mo2); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } }   // up_alloc may have flushed the batch that held the first one
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits;
         for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {
-            uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
+            uint32_t w = MAX(t->d.width >> (l + sk), 1u), h = MAX(t->d.height >> (l + sk), 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
             size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
             for (unsigned y = 0; y < layers; y++) {
                 size_t poff; id<MTLBuffer> params = up_param_alloc(&poff);   // Metal 4 has no setBytes: the parameter block of each deswizzle is cut from a shared block (no new GPU buffer each time)
-                if (nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, params, poff, (__bridge id<MTLBuffer>)mb, mo, &t->d, l, y, stg, stg_off + off, pitch)) { enc_ok = 0; break; }
+                if (nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, params, poff, (__bridge id<MTLBuffer>)mb, mo, &t->d, l + sk, y, stg, stg_off + off, pitch)) { enc_ok = 0; break; }
                 up_blit_add(stg, stg_off + off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l);
                 off += pitch * rows * z;
             }
@@ -3668,11 +3700,11 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
                 id<MTLBuffer> stg = up_alloc(total ? total : 16, &stg_off);
                 size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits;
                 for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {
-                    uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
+                    uint32_t w = MAX(t->d.width >> (l + sk), 1u), h = MAX(t->d.height >> (l + sk), 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
                     size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
                     for (unsigned y = 0; y < layers; y++) {
                         size_t poff; id<MTLBuffer> params = up_param_alloc(&poff);
-                        if (nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, params, poff, sp_src, 0, &t->d, l, y, stg, stg_off + off, pitch)) { enc_ok = 0; break; }
+                        if (nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, params, poff, sp_src, 0, &t->d, l + sk, y, stg, stg_off + off, pitch)) { enc_ok = 0; break; }
                         up_blit_add(stg, stg_off + off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l);
                         off += pitch * rows * z;
                     }
@@ -3690,14 +3722,14 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     size_t off = 0;
     int zb = zblock_on() && t->d.format >= 0x79 && t->d.format <= 0x94; if (zb) { g_zb_ser = t->serial; g_zb_n = (int)MIN(d.mipmapLevelCount, 16u); memset(g_zb, 0, sizeof g_zb); memset(g_zb_tot, 0, sizeof g_zb_tot); }
     for (unsigned l = 0; l < d.mipmapLevelCount; l++) {
-        uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
+        uint32_t w = MAX(t->d.width >> (l + sk), 1u), h = MAX(t->d.height >> (l + sk), 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
         size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
         for (unsigned y = 0; y < layers; y++) {
             if (linear) {   // one 2D level (linear_fit): rows of the storage's stride, the same pitch GetStorageSize counts
                 size_t srow = t->L.layer_size / (t->d.height ? t->d.height : 1);
                 if (l || y || z != 1 || srow < pitch || srow * rows > t->L.size) { RED_ONCE(153, "linear texture upload: %ux%u format %#x target %d levels %u is not one 2D level of rows (stride %zu)", t->d.width, t->d.height, t->d.format, t->d.target, t->d.levels, srow); break; }
                 for (size_t r = 0; r < rows; r++) memcpy((uint8_t *)stg.contents + off + r * pitch, src + r * srow, pitch);
-            } else if (nvn_deswizzle(&t->d, l, y, src, (uint8_t *)stg.contents + off, pitch)) { RED_ONCE(9, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
+            } else if (nvn_deswizzle(&t->d, l + sk, y, src, (uint8_t *)stg.contents + off, pitch)) { RED_ONCE(9, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
             if (rb_shift) rb_swap_rows((uint8_t *)stg.contents + off, pitch, rows, z, pitch, pitch * rows, rb_shift);
             if (zb && l < 16) { const uint64_t *q = (const uint64_t *)((const uint8_t *)stg.contents + off); size_t nb = pitch * rows * z / 16;
                 for (size_t i = 0; i < nb; i++) g_zb[l] += !(q[2 * i] | q[2 * i + 1]);
@@ -4697,6 +4729,36 @@ static void reup_note(const tex_t *t, const NvPkg *pk) {
     MLOG("REUP ser=%llu %ux%ux%u fmt=%#x flags=%#x has_layout=%d sparse=%d mem=%p size=%llu pages=%u dirty=%u(%u..%u) copies=%llu",
          (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.flags, t->has_layout, pk->sparse, t->mem, (unsigned long long)t->L.size, np, nd, first_p, last_p, (unsigned long long)pk->copies);
 }
+// Profile rt_lossy (DM_NVN_RT_LOSSY; ported from kid-with-sword-remake a758ea2d): a colour render target the GPU only draws into (no shader writes or atomics, no format views, private, 2D) that
+// gets its own allocation (not a pool heap) is made with Metal's lossy compression, which Apple GPU family 8 and later keep in about half the memory and bandwidth; precision drops a
+// little where neighbouring colours differ. Depth / stencil and the integer formats stay lossless; a texture Metal refuses this way is made lossless (tex_mtl_)
+static uint64_t g_rtl_n, g_rtl_bytes;
+static void rt_lossy(MTLTextureDescriptor *d) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_RT_LOSSY"); on = (e && *e ? atoi(e) != 0 : DM_GAME_RT_LOSSY) && [g_dev supportsFamily:MTLGPUFamilyApple8];
+        if (on) MLOG("render targets: lossy compression for colour targets drawn as attachments only (profile rt_lossy; DM_NVN_RT_LOSSY=0 turns it off)"); }
+    if (!on || !(d.usage & MTLTextureUsageRenderTarget) || (d.usage & (MTLTextureUsageShaderWrite | MTLTextureUsageShaderAtomic | MTLTextureUsagePixelFormatView)) || d.storageMode != MTLStorageModePrivate) return;
+    if (d.textureType != MTLTextureType2D && d.textureType != MTLTextureType2DArray) return;
+    MTLPixelFormat f = d.pixelFormat;
+    // An allow-list: Metal stops the process at a format without lossy compression (RG11B10Float, the scene colour, is one) and names no query for it
+    if (f != MTLPixelFormatRGBA8Unorm && f != MTLPixelFormatRGBA8Unorm_sRGB && f != MTLPixelFormatBGRA8Unorm && f != MTLPixelFormatBGRA8Unorm_sRGB && f != MTLPixelFormatRGBA16Float) return;
+    d.allowGPUOptimizedContents = YES; d.compressionType = MTLTextureCompressionTypeLossy;
+    g_rtl_n++; g_rtl_bytes += (uint64_t)d.width * d.height * mtl_pf_bytes(f);
+}
+// The game copies from this texture or reads it back: if it is soft (tex_soft), it goes whole from here on, uploaded again now with its finest level, which its storage still holds.
+// The soft texture becomes the spare (in-flight draws may still read it)
+static void soft_harden(const tex_t *t) {
+    if (!t || !tex_soft(t) || (t->pool && t->pool->magic != MAGIC('P', 'O', 'O', 'L'))) return;
+    id have = tex_get(t->serial); NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;
+    uint64_t k = (uint64_t)(uintptr_t)t->mem; pthread_mutex_lock(&g_smu); nvn_hm_put(&g_soft_hard, &k, (void *)1); pthread_mutex_unlock(&g_smu);
+    static uint64_t nh; if (nh++ < 4 || !(nh & (nh - 1))) MLOG("soft textures: kept whole, the game copies from it: ser=%llu %ux%ux%u format %#x (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)nh);
+    if (!pk || pk->sparse) return;
+    uint64_t st; id<MTLTexture> nt = pkg_upload(t, &st, nil, pk->tex.usage);
+    if (!nt) return;
+    if (pk->spare) defer_obj_release(pk->spare);
+    pk->spare = pk->tex; pk->spare_fence = g_fence + 1; pk->tex = nt; ser_note(t->serial); pk->stamp = st; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = st;
+    if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
+    pkg_edges_take(pk, t);
+}
 static _Atomic uint64_t g_stat_ghost_skip;
 static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
     tex_t *t = (tex_t *)ct;
@@ -4894,7 +4956,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
         } else {
             mt = image_texture(t, d);
             if (!mt) mt = pool_heap_texture(t, d);   // the pool's own heap first (#1453); what it leaves out may take a recycled heap (rh_texture)
-            if (!mt) { mt = rh_texture(t, d); if (!mt) mt = [g_dev newTextureWithDescriptor:d];
+            if (!mt) { rt_lossy(d); mt = rh_texture(t, d); if (!mt) mt = [g_dev newTextureWithDescriptor:d];
+                if (!mt && d.compressionType == MTLTextureCompressionTypeLossy) { d.compressionType = MTLTextureCompressionTypeLossless; mt = [g_dev newTextureWithDescriptor:d]; }
                 if (mt) { res_add(mt); if (!tex_init_fill(t, mt)) tex_zero_fill(mt); } }
         }
         if (!mt) { RED_ONCE(2, "failed to create MTLTexture %ux%u format %#x target %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
@@ -7166,6 +7229,7 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
             sg = treg_ep();
         }
         NSUInteger l0 = r.v.set_levels ? r.v.base_level : 0, nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : base.mipmapLevelCount - l0;
+        if (l0 && tex_soft(&rp->t) && base.width < rp->t.d.width) { unsigned k = tex_soft_n(&rp->t); l0 = l0 > k ? l0 - k : 0; if (!r.v.nlevels) nl = base.mipmapLevelCount - l0; }   // a soft texture has no level 0: a view of it starts at what is level 0 here, one level less
         if (l0 >= base.mipmapLevelCount) { RED_ONCE(109, "texture view id %d starts at mip %lu beyond %lu levels", tid, (unsigned long)l0, (unsigned long)base.mipmapLevelCount); return nil; }
         // A level count past the texture's levels is cut to those it has, as deko3d's Tegra descriptor writer clips the maximum level (Echoes of Wisdom: levels 1 + 7 of a seven-level texture,
         // which Metal's validation refuses)
@@ -10779,6 +10843,17 @@ static void pool_table_give(id<MTLBuffer> b) {
         defer_obj_release(g_pool_spare[o].buf); g_pool_spare[o] = g_pool_spare[--g_npool_spare]; g_pool_spare[g_npool_spare].buf = nil; }
     g_pool_spare[g_npool_spare].buf = b; g_pool_spare[g_npool_spare].fence = g_fence + 1; g_npool_spare++;
 }
+// Profile key pool_skip_retired (DM_NVN_POOL_SKIP_RETIRED=1 / 0 overrides it; upstream PR #1393, as kid-with-sword-remake carries it): an ID whose texture the game has finalized (retired),
+// that holds no view and that no shader has read (pool_seen) gets the dummy in a pool table, rather than a Metal texture made again from its storage. At a scene change Ocarina of Time
+// finalizes the old scene's textures and leaves their IDs registered (about 33,000 IDs in its texture pool); made again they held 1.5-2.5 GB (PR #1393: GPU allocated 11.4 GB against 13.2
+// at the Kokiri Forest door, on an older host). A shader's read of the ID marks it seen, and the next walk makes it as before, so at worst it reads the dummy for a few frames, as a
+// texture past the walk's budget does (pool_stand). A key, not the default: on the console a handle to a finalized texture still reads its storage while that is there
+static uint64_t g_stat_pool_skipped;
+static int pool_skip_retired(void) {
+    static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_POOL_SKIP_RETIRED"); v = e && *e ? atoi(e) != 0 : DM_GAME_POOL_SKIP_RETIRED;
+        if (v) MLOG("pool_skip_retired: pool tables give retired texture IDs no shader has read the dummy"); }
+    return v;
+}
 // One entry of a pool table, as the walk takes it: the resource ID of what the ID holds (0: nothing of the type, or a texture not made). gone counts IDs without storage, and *dead is set for
 // one whose storage does not exist (yet): one marked gone stays so until it is registered again, which is noted. left / left_req count the textures past limit (what this frame may still
 // make) and those of them a shader read. *transient is set for a view of a retired registration, which goes at the end of this submission. Caller holds g_rmu
@@ -10790,6 +10865,7 @@ static uint64_t pool_entry(int samp, int dtt, int id_, uint64_t limit, int *gone
     if (r->gone) { ++*gone; return 0; }
     if (!r->view && !tex_storage_live(&r->t)) { ++*gone; *dead = 1; return 0; }
     if (!r->view && pool_unwritten_target(&r->t)) return 0;   // dummy until a pass writes it (its new texture is noted: ser_note)
+    if (r->retired && !r->view && !pool_seen(id_) && pool_skip_retired()) { g_stat_pool_skipped++; return 0; }   // pool_skip_retired: the dummy, not a texture made again
     int need_make = !r->view && !tex_already_made(&r->t);
     if (need_make && pool_tex_size(&r->t) > limit && !(pool_seen(id_) && g_walk_req < POOL_REQ_BYTES)) { ++*left; *left_req += pool_seen(id_); return pool_stand(id_, dtt); }   // a texture a shader read is made whatever the budget, so it reads the dummy for a few frames at most
     if (r->tt1 && r->tt1 - 1 != dtt) return 0;   // an ID of another texture type, seen before (the table holds only its own type): nothing to look up or charge (the idea is from PR 1428)
@@ -14960,10 +15036,12 @@ static void copy_t2b(const p_copy_b2t *c, uint32_t size) {
     rp_flush();   // Materialize pending clears before reading, matching copy_t2t.
     g_wr_epoch++; g_mdx_epoch++;
     if (c->tex) xv_check(c->tex->serial, c->has_view && c->view.set_levels ? c->view.base_level : 0, c->has_view && c->view.set_layers ? c->view.min_layer : 0, "texture-to-buffer copy");
+    soft_harden(c->tex);   // the game copies from it: whole from here on (tex_soft)
     id<MTLTexture> t = tex_mtl(c->tex);
     if (!t) return;
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
+    if (!tex_soft_level_mt(c->tex, t, &level)) { RED_ONCE(164, "copy out of a left-out level of a soft texture: skipped (first case ser=%llu)", (unsigned long long)c->tex->serial); return; }
     if (!tex_level_ok(t, level, "texture-to-buffer copy")) return;
     const p_copy_strides *cs = copy_strides(c, size); int64_t rs = cs ? cs->row : S.copy_stride, is = cs ? cs->image : S.copy_img_stride;   // S: OP_COPY_STRIDE of an older capture
     size_t row = rs ? (size_t)rs : (size_t)((c->r.width + bw - 1) / bw) * bpb;
@@ -15036,7 +15114,9 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     // A guest thread can live indefinitely without draining its outer pool: release readback temporaries here, after the GPU and CPU copies finish.
     // Finding: docs/reference/memory.md, GPU readback without an autorelease pool.
     @autoreleasepool {
+    soft_harden(t);   // the game reads it back: whole from here on (tex_soft)
     id<MTLTexture> mt = tex_mtl(t);
+    { unsigned lv = (unsigned)level; if (mt && !tex_soft_level_mt(t, mt, &lv)) { memset(dst, 0, img * nz); return; } level = lv; }
     if (!mt || !tex_level_ok(mt, level, "CPU readback")) { memset(dst, 0, img * nz); return; }
     mtl_finish_gpu_at(WS_READTEX);
     id<MTLBuffer> buf = [g_dev newBufferWithLength:wb * hb * nz options:MTLResourceStorageModeShared];
@@ -15055,6 +15135,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
 // when that holds the source's content (tex_storage_src), else read back after the copy (mirror_readback). A LINEAR texture counts once it is CPU-written (linear_storage_ok, one no view can
 // take): a view's copies land in the storage it is made on. One the GPU may render or store into does not: a GPU write makes it a GPU texture (cpu_unc_drop)
 static int tex_storage_dst(const tex_t *t) {
+    if (tex_soft(t)) return 0;   // its host levels are not the game's: nothing reads a soft texture back into its storage
     if (!t->mem || !t->pool || (t->pool->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) || t->d.samples > 1 || t->d.target == NVN_TEXTURE_TARGET_BUFFER
         || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE))
         || ((t->d.flags & NVN_TEXTURE_FLAGS_LINEAR) && !tex_cpu_written(t->serial))) return 0;
@@ -15203,6 +15284,7 @@ static void copy_b2t(const p_copy_b2t *c, uint32_t size) {
     if (!t) { PD("C ser=%llu (no host texture)", c->tex->serial); return; }
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
+    if (!tex_soft_level_mt(c->tex, t, &level)) return;   // into a left-out level of a soft texture, which is not kept
     if (!tex_level_ok(t, level, "buffer-to-texture copy")) return;
     const p_copy_strides *cs = copy_strides(c, size); int64_t rs = cs ? cs->row : S.copy_stride, is = cs ? cs->image : S.copy_img_stride;   // S: OP_COPY_STRIDE of an older capture
     size_t row = rs ? (size_t)rs : (size_t)((c->r.width + bw - 1) / bw) * bpb;
@@ -15453,14 +15535,17 @@ static void copy_t2t(const p_copy_t2t *c) {
         int ss = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, ds = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
         if (zskip_has(c->src->serial, sl, ss)) zskip_add(c->dst->serial, dl, ds);
     }
+    soft_harden(c->src);   // the game copies from it: whole from here on (tex_soft)
     id<MTLTexture> s = tex_mtl(c->src);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
     if (!s || !c->dst) return;
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
+    if (!tex_soft_level_mt(c->src, s, &sl)) { RED_ONCE(165, "texture copy with a left-out level of a soft texture: skipped (first case src ser=%llu dst ser=%llu)", (unsigned long long)c->src->serial, (unsigned long long)c->dst->serial); return; }
     if (!tex_level_ok(s, sl, "texture copy source")) return;
     if (bc_alias_copy(c, s, sl, sz0, dl, dz0)) return;   // the destination aliases a compressed texture: the bytes go there, and the alias's own texture is not made (see bc_alias_copy)
     id<MTLTexture> d = tex_mtl(c->dst); sparse_gpu_wrote(c->dst);
+    if (d && !tex_soft_level_mt(c->dst, d, &dl)) { RED_ONCE(165, "texture copy with a left-out level of a soft texture: skipped (first case src ser=%llu dst ser=%llu)", (unsigned long long)c->src->serial, (unsigned long long)c->dst->serial); return; }
     if (!d || !tex_level_ok(d, dl, "texture copy destination")) return;
     if (!tex_storage_dst(c->dst)) gsb_mark(c->dst, d, dl, dz0 + (unsigned)c->dr.zoffset, (unsigned)(c->dr.depth ? c->dr.depth : 1), &c->dr);   // the destination's level as it is when the submission ends
     if (c->flags & DM_COPY_RESOLVE) {   // Downsample: multisample resolve into the single-sample destination (depth takes sample 0); with equal sample counts it is a plain whole copy
