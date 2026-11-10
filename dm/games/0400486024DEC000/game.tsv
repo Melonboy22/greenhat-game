@@ -57,8 +57,10 @@ gmem_skip	on
 # Pool tables give a finalized texture ID with no view the dummy instead of making its texture again: about 2.5 GB at the house-to-forest change (upstream #1393, nvn_mtl.m pool_skip_retired)
 pool_skip_retired	on
 # Guest copies of textures in CPU_NO_ACCESS pools (render and depth targets the game cannot read) given back once their GPU copy exists (upstream #1447, nvn_mtl.m rel_*): about 550 MB outdoors.
-# 2: also CPU-visible copies, pages unwritten since their upload (1.85 GB more in Kokiri Forest: peak 7.0 → 5.2 GB with the iPhone's guest files); no texture lost and no problem seen in a 4-minute play test
-tex_release	2
+# Level 1 since V23. Level 2 (also CPU-visible copies, pages unwritten since their upload) saved 1.85 GB more in Kokiri Forest (peak 7.0 → 5.2 GB with the iPhone's guest files),
+# but a texture the game makes again over released pages reads zeros: magenta and black ground, cliffs, walls and doors after area changes (Kokiri Forest, Hyrule Field, Hyrule Castle).
+# Upstream #1641 and #1972 (both on this fork) found level 1 fixes it. DM_TEX_RELEASE=2 brings the saving back
+tex_release	1
 # Large block-compressed textures from the game files kept without their finest level on the GPU (tex_soft, ported from the plumber-racer-2 fork)
 tex_soft	on
 # rt_drop (render targets taken over by a later-drawn one become 1x1 stand-ins, nvn_mtl.m rtd_sweep) is off: footprint 8.9 → 7.1 GB at the Kokiri Forest doorway, but the game still
