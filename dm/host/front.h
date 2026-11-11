@@ -76,6 +76,9 @@ void front_gpu_lost(void);
 // why in an alert and quits as ⌘Q does, so the launcher's work after the game runs; without a window, and on iOS, the run ends with the host's graceful exit (the weak default in nvn_mtl.m).
 // used_mb, limit_mb: what is allocated, and the working set. Any thread; the front end switches to its main thread and must not block
 void front_gpu_memory_stop(unsigned long long used_mb, unsigned long long limit_mb);
+// The memory watchdog stops the game (hle_nvn.c dm_mem_watchdog): resident memory over its cap (DM_MEM_CAP_GB) after letting go of what it could, with the system short of memory too, or far past
+// it. The Mac front end says why in an alert and quits with status 86; without a window, and on iOS, the weak default in hle_nvn.c exits with 86 as the watchdog did. Any thread, must not block
+void front_memory_stop(unsigned long long used_mb, unsigned long long cap_mb);
 
 // Offline HTML pages (the web applet's offline pages; hle_web.c): a web view over the game picture (web_apple.m, Mac and iPhone). Called from guest threads; the front end works on its main
 // thread. front_web_open: dir = the folder the document path is relative to (an HtmlDocument's html-document), path = the document path with its query, callback = the URL prefix whose

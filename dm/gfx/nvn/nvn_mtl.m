@@ -2939,7 +2939,8 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
     pthread_mutex_unlock(&g_smu);
 }
 // Under memory pressure (the GPU memory guard's eviction level, guard_evict), the ring of finalized serials gives back its oldest half, down to DM_NVN_GHOST_TRIM_MIN entries
-// (default 2048, about 5 s of Ocarina of Time's 400 finalizes a second; 0 turns this off); force (the stop level) goes straight to that floor. The ring holds 32,768 so that retired IDs
+// (default 2048, about 5 s of Ocarina of Time's 400 finalizes a second; 0 turns this off); force (the stop level) goes straight to that floor, and force 2 (the memory watchdog over its
+// cap, mtl_mem_relief) to an eighth of it: in an area of large textures the floor's 2,048 entries alone held 500 MB. The ring holds 32,768 so that retired IDs
 // still drawn keep their textures (PR #1731: wall and tunnel fixtures went missing with 512), which is about 80 s of an area left behind: on a 16 GB Mac (Hyrule Field after 15 minutes,
 // 31,987 entries) the guard found nothing else to let go and ended the game. A trimmed serial resolves anew (ser_note): a retired ID a shader still reads has its texture made again
 // from its storage, as at a cold start; a render target's content is not in its storage, so one still read after 5 s would show as cleared. Each texture goes behind the fences of the
@@ -2949,7 +2950,7 @@ static unsigned ghost_trim(int force) {
     if (!floor_) return 0;
     unsigned cap = ghost_cap(), n = 0;
     pthread_mutex_lock(&g_smu);
-    unsigned have = g_ghost.n, keep = force ? (unsigned)floor_ : MAX((unsigned)floor_, have / 2);
+    unsigned have = g_ghost.n, keep = force >= 2 ? MAX(64u, (unsigned)floor_ / 8) : force ? (unsigned)floor_ : MAX((unsigned)floor_, have / 2);   // 2: the memory watchdog's relief (mtl_mem_relief)
     for (unsigned i = 0; i < cap && have > keep; i++) {   // oldest first: the slot after the last written
         uint64_t *slot = &g_ghost_ring[(g_ghost_next + i) % cap];
         if (!*slot) continue;
@@ -6896,7 +6897,11 @@ static void guard_evict(int force) { @autoreleasepool {
         MLOG("GPU memory guard: %llu MB allocated (it lets go from %llu MB): %u idle sharing entries, %u spare textures, %u staging blocks, %u finalized serials of the ring (%u left) let go", (unsigned long long)(g_dev.currentAllocatedSize >> 20), (unsigned long long)(g_guard.evict >> 20), entries, spares, staging, ghosts, g_ghost.n);
 } }
 // On the submit thread, after a submission, with no lock held. The stop level gives the eviction its chance first: this submission's fence, then the sizes again
+static _Atomic int g_relief_req;   // the memory watchdog asks for a relief (mtl_mem_relief); the submit thread carries it out at its next guard_act
+void mtl_mem_relief(void) { atomic_store(&g_relief_req, 1); }
+int mtl_mem_sys_low(void) { return atomic_load(&g_sys_margin) && atomic_load(&g_sys_lv) >= GUARD_EVICT; }   // the guard's system side at its eviction level or past it
 static void guard_act(uint64_t fence) {
+    if (atomic_exchange(&g_relief_req, 0)) guard_evict(2);
     int lv = atomic_exchange(&g_guard_lv, GUARD_OK);
     if (!lv) return;
     guard_evict(lv >= GUARD_STOP);

@@ -314,6 +314,13 @@ check_t_ubp_running: t_ubp_running
 	./t_ubp_running
 t_direct_upload: t_direct_upload.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_direct_upload.m $(MTL_T_SRC) $(FW)
+t_mem_watchdog: t_mem_watchdog.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_mem_watchdog.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_mem_watchdog
+check_t_mem_watchdog: t_mem_watchdog
+	MTL_DEBUG_LAYER=1 ./t_mem_watchdog
+	./t_mem_watchdog low
+	./t_mem_watchdog runaway
 t_ghost_trim: t_ghost_trim.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_ghost_trim.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_ghost_trim

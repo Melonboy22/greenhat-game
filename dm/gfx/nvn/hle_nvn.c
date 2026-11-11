@@ -29,20 +29,20 @@
 #include <sys/sysctl.h>
 #include <errno.h>
 #if TARGET_OS_OSX
-static inline long dm_host_mem_cap_gb(void) {
+static inline double dm_host_mem_cap_gb(void) {
     uint64_t mem = 0; size_t len = sizeof mem;
     if (sysctlbyname("hw.memsize", &mem, &len, NULL, 0) == 0 && mem > 0) {
         long gb = (long)(mem >> 30);
         if (gb >= 64) return gb - 16;   // 64 GB Mac -> 48 GB; 128 GB -> 112 GB
         if (gb >= 36) return gb - 8;    // 36-48 GB Mac -> 28-40 GB
-        if (gb >= 16) return gb - 4;    // 16-24 GB Mac -> 12-20 GB
+        if (gb >= 16) return gb - 3;    // 16-24 GB Mac -> 13-21 GB: at 12 GB on a 16 GB M5, Ocarina of Time was ended at 12.3 GB with a quarter of memory free (the watchdog frees first now)
         return (gb * 3) / 4;
     }
     return 24;
 }
 #define DM_MEM_CAP_DEFAULT_GB dm_host_mem_cap_gb()
 #else
-#define DM_MEM_CAP_DEFAULT_GB 0
+#define DM_MEM_CAP_DEFAULT_GB 0.0
 #endif
 #include <pthread/qos.h>
 #include <sys/resource.h>
@@ -1596,6 +1596,29 @@ NVN(nvnQueueAcquireTexture, NVNqueueAcquireTextureResult, NVNqueue *q, NVNwindow
     (void)q; return h_nvnWindowAcquireTexture(w, NULL, idx) == NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS ? (NVNqueueAcquireTextureResult)0 : (NVNqueueAcquireTextureResult)1;
 }
 
+// Memory watchdog, every 300 frames (dump_frame): resident memory (phys_footprint, MB) against the cap (DM_MEM_CAP_GB, MB here; 0 = off). Over the cap it first asks the graphics layer to
+// let go of what it can (mtl_mem_relief: the GPU memory guard's eviction, the ring of finalized serials down to an eighth of its floor), and checks again 300 frames later. It stops the game
+// only while the system is short of memory too (mtl_mem_sys_low: the guard's system side at its eviction level) after three checks over the cap in a row, or at once past the cap and 1.5 GB,
+// which only a runaway reaches (the cap's purpose: host memory that grows without end took machines into a kernel panic). Before, it exited at the first check over the cap with no word:
+// Ocarina of Time on a 16 GB M5 at 12,322 MB of a 12 GB cap, with a quarter of memory free. The stop says why in the front end's alert (front_memory_stop) and exits with status 86
+void mtl_mem_relief(void); int mtl_mem_sys_low(void);
+__attribute__((weak)) void front_memory_stop(unsigned long long used_mb, unsigned long long cap_mb) { (void)used_mb; (void)cap_mb; _exit(86); }   // no window, iOS, the tests: as before
+void dm_mem_watchdog(unsigned long long mb, long long cap);   // the tests call it (t_mem_watchdog)
+void dm_mem_watchdog(unsigned long long mb, long long cap) {
+    static int over, stopped; static unsigned long long lines;
+    if (cap <= 0 || stopped) return;
+    if (mb <= (unsigned long long)cap) { if (over && lines++ < 32) LOG("memory watchdog: resident %llu MB, under the limit of %lld MB again (frame %llu)", mb, cap, (unsigned long long)g_frame); over = 0; return; }
+    over++; int low = mtl_mem_sys_low(), runaway = mb > (unsigned long long)cap + 1536;
+    if (runaway || (over >= 3 && low)) {
+        stopped = 1;
+        LOG("[RED] memory watchdog: resident %llu MB over the limit of %lld MB (frame %llu; %s), stopping the game", mb, cap, (unsigned long long)g_frame, runaway ? "past it by more than 1.5 GB" : "three checks over it, the system short of memory too");
+        front_memory_stop(mb, (unsigned long long)cap);
+        return;
+    }
+    if (lines++ < 32) LOG("memory watchdog: resident %llu MB over the limit of %lld MB (frame %llu, check %d over it; the system %s): letting go of what the graphics layer can", mb, cap, (unsigned long long)g_frame, over, low ? "short of memory too" : "not short of memory");
+    mtl_mem_relief();
+}
+
 // Frame boundary: on each present, print / write to disk the call count of each NVN function for this frame
 static uint64_t g_prev[NVN_NFUNC];
 static FILE *g_tsv;
@@ -1624,12 +1647,12 @@ static void dump_frame(void) {
     else if (g_frame % 300 == 0) LOG("[nvn] frame %llu: %u functions %llu calls", g_frame, nfn, total);
     g_frame++; cs_dump();
 counts_done:
-    // Every 300 frames read resident memory and hand it to the graphics layer to print the memory readout line (mtl_mem_stat, low frequency, capped). Memory watchdog: when resident memory exceeds the cap, log a failure and exit on its own. On by default only on the Mac host (24 GB: runaway host memory
-    // drags the whole machine into a kernel panic, which happened twice with other programs on the same machine), or set for tests with DM_MEM_CAP_GB=<integer>; the player's iOS app has no cap (exiting before the system kills it is pointless and only adds another kind of crash)
+    // Every 300 frames read resident memory and hand it to the graphics layer to print the memory readout line (mtl_mem_stat, low frequency, capped). Memory watchdog (dm_mem_watchdog): over the cap it lets go of what it can first, and stops the game only as described there. On by default only on the Mac host (24 GB: runaway host memory
+    // drags the whole machine into a kernel panic, which happened twice with other programs on the same machine), or set with DM_MEM_CAP_GB=<GB, 12.5 too>; the player's iOS app has no cap (exiting before the system kills it is pointless and only adds another kind of crash)
     if (g_frame % 300 == 0) { task_vm_info_data_t vi; mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
         if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &cnt) == KERN_SUCCESS) { unsigned long long mb = (unsigned long long)(vi.phys_footprint >> 20); void mtl_mem_stat(unsigned long long, unsigned long long); mtl_mem_stat(g_frame, mb);
-            static long cap = -1; if (cap < 0) { const char *e = getenv("DM_MEM_CAP_GB"); cap = e ? atol(e) : DM_MEM_CAP_DEFAULT_GB; }
-            if (cap > 0 && mb > (unsigned long long)cap * 1024) { LOG("[RED] memory watchdog: resident %llu MB over the limit of %ld GB (frame %llu), exiting", mb, cap, (unsigned long long)g_frame); _exit(86); } } }
+            static long long cap = -1; if (cap < 0) { const char *e = getenv("DM_MEM_CAP_GB"); double gb = e ? strtod(e, NULL) : DM_MEM_CAP_DEFAULT_GB; cap = gb > 0 ? (long long)(gb * 1024) : 0; }
+            dm_mem_watchdog(mb, cap); } }
     dm_guest_frame_tick();   // Deterministic guest clock (DM_DETCLOCK, host hle_os.c): each present advances a fixed step; a no-op when not enabled
     dm_cheats_present();   // Atmosphère cheat files (hle_cheats.c): enabled cheats apply once per presented frame; the ~60 Hz idle thread only covers gaps
 }

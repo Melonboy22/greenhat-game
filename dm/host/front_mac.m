@@ -1746,6 +1746,16 @@ static void front_stop_alert(NSString *title, NSString *text, int status) {
         [win toggleFullScreen:nil];
     });
 }
+// The memory watchdog stops the game (front.h, hle_nvn.c dm_mem_watchdog): as the GPU memory stop, an alert that says why, then the app quits with status 86, the watchdog's exit status
+void front_memory_stop(unsigned long long used_mb, unsigned long long cap_mb) {
+    if (!g_layer) _exit(86);
+    LOG("front end: the game's memory is over the watchdog's limit; telling the player and quitting");
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ dm_audio_suspend(1); dm_gfx_suspend(1); });
+    front_stop_alert([@(DM_GAME_NAME) stringByAppendingString:@" stopped: the Mac is running out of memory"],   // @(): the name is UTF-8, which %s would not read as such
+                     [NSString stringWithFormat:@"The game used %llu MB, over its limit of %llu MB, and letting go of what it could did not bring it back while macOS was short of memory too. Going on could freeze this Mac, "
+                                                 "so the game stops here; progress since your last save is lost. Closing other apps leaves the game more room (DM_MEM_CAP_GB sets the limit). The log has the details. "
+                                                 "Please report it on GitHub with python3 scripts/bug_report.py %@, which collects the log.", used_mb, cap_mb, @(DM_GAME_ID)], 86);
+}
 // GPU memory nearly full (front.h). The gate first, off the calling thread: dm_gfx_suspend waits for the submission in progress, which may be the caller, and no more GPU work may grow what is held
 void front_gpu_memory_stop(unsigned long long used_mb, unsigned long long limit_mb) {
     if (!g_layer) { kill(getpid(), SIGTERM); return; }
