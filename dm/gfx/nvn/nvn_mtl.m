@@ -2965,25 +2965,31 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
 // 31,987 entries) the guard found nothing else to let go and ended the game. A trimmed serial resolves anew (ser_note): a retired ID a shader still reads has its texture made again
 // from its storage, as at a cold start; a render target's content is not in its storage, so one still read after 5 s would show as cleared. Each texture goes behind the fences of the
 // submissions that may use it (obj_drop), as the ring's own eviction does
-enum { GHOST_TRIM_IDLE = 600 };   // frames (10 s at 60 fps) since a packaged texture was last resolved (NvPkg used)
-static int ghost_restorable(id o, uint64_t now);   // after NvPkg's interface
+// Since oot-plus 7cca9bb1's run: with 600 frames idle the relief let go of nothing at an area change (three spikes of 11.2 -> 12.3-12.8 GB on a 16 GB M5, up to 300 of 300 frames
+// dropped, the ring-only textures 0.5-1.1 GB, "0 finalized serials let go" at each relief), as nothing in the ring is that old then. Now a serial stays while an ID that names it
+// was read by a shader through a pool (pool_seen_lately) or resolved for a binding (treg used_f) in the last GHOST_LATELY frames (ghost_lately), and the idle time is 2 s
+enum { GHOST_TRIM_IDLE = 120, GHOST_LATELY = 120 };   // frames since a packaged texture was last resolved (NvPkg used); frames an ID's direct use keeps its serial
+static int ghost_restorable(id o, uint64_t serial, uint64_t now, CFSetRef lately);   // after NvPkg's interface
+static CFMutableSetRef ghost_lately(uint64_t now);   // after the texture ID table
 static unsigned ghost_trim(int force) {
     // On by default again (2048) with the rule above: off, the ring alone held 1.5 GB of an area's large textures 2 minutes after entering it on a 16 GB M5, the watchdog's relief
     // at 12 GB had nothing to let go and the game paged at 10 fps (oot-plus d461bc2c). DM_NVN_GHOST_TRIM_MIN=0 turns it off
     static long floor_ = -1; if (floor_ < 0) { const char *e = getenv("DM_NVN_GHOST_TRIM_MIN"); floor_ = e && *e ? atol(e) : 2048; if (floor_ < 0) floor_ = 0; }
     if (!floor_ || !force) return 0;
     unsigned cap = ghost_cap(), n = 0; uint64_t now = atomic_load(&g_cur_frame);
+    CFMutableSetRef lately = ghost_lately(now);   // before g_smu: it takes g_rmu, and g_rmu comes first (tex_by_id)
     pthread_mutex_lock(&g_smu);
     unsigned have = g_ghost.n, keep = force >= 2 ? MAX(64u, (unsigned)floor_ / 8) : force ? (unsigned)floor_ : MAX((unsigned)floor_, have / 2);   // 2: the memory watchdog's relief (mtl_mem_relief)
     for (unsigned i = 0; i < cap && have > keep; i++) {   // oldest first: the slot after the last written
         uint64_t *slot = &g_ghost_ring[(g_ghost_next + i) % cap];
         if (!*slot) continue;
         if (!nvn_hm_get(&g_ghost, slot)) { *slot = 0; continue; }   // already gone (ghost_purge)
-        id ev = hm_get_id(&g_ghost, slot); if (!ghost_restorable(ev, now)) continue;   // GPU-written, or used lately: kept
+        id ev = hm_get_id(&g_ghost, slot); if (!ghost_restorable(ev, *slot, now, lately)) continue;   // GPU-written, or used lately: kept
         if (ev) { ghost_held_add((__bridge void *)ev, -1); obj_drop(ev); }
         hm_del_id(&g_ghost, slot); ser_note(*slot); *slot = 0; n++; have--;
     }
     pthread_mutex_unlock(&g_smu);
+    CFRelease(lately);
     return n;
 }
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
@@ -2999,9 +3005,9 @@ static unsigned ghost_trim(int force) {
 @end
 // What ghost_trim may let go: a packaged texture (its content is in its storage, so made again it is the same; not a sparse one, whose tiles follow the game's mappings) that was not
 // resolved for GHOST_TRIM_IDLE frames. A render target or a texture the GPU wrote is never let go: made again from storage it would read cleared. Caller holds g_smu
-static int ghost_restorable(id o, uint64_t now) {
+static int ghost_restorable(id o, uint64_t serial, uint64_t now, CFSetRef lately) {
     if (![o isKindOfClass:[NvPkg class]]) return 0;
-    NvPkg *pk = o; return !pk->sparse && !pk->ps && now >= pk->used + GHOST_TRIM_IDLE;
+    NvPkg *pk = o; return !pk->sparse && !pk->ps && now >= pk->used + GHOST_TRIM_IDLE && !(lately && CFSetContainsValue(lately, (const void *)(uintptr_t)serial));
 }
 // Packaged textures by storage and description. Engines make many texture objects over one texture's bytes, each with a serial of its own: Ocarina of Time's 32,768 registered IDs name 3,607 storages,
 // 2.0 GB, and an upload per serial took 6 GB, past what a 16 GB Mac can keep wired once the pools are added. A new serial with the same storage and description takes the same NvPkg, so its
@@ -5075,13 +5081,18 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
 #endif
     MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (%u of them unreferenced; evicted with pools %llu, on storage takeover %llu, idle %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total), retired but held by a serial %u, recycled render-target heaps made %llu, reused %llu, freed %llu, waiting %u (%llu MB); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, aorph, (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)g_alias_idle, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, nwait,
          (unsigned long long)g_rh_made, (unsigned long long)g_rh_reused, (unsigned long long)g_rh_trimmed, rh_n, (unsigned long long)(rh_bytes >> 20), avail);
-    { uint64_t gb = 0; unsigned gn = 0, ge;   // what the ring of finalized serials alone keeps (textures of their own allocation, no live serial holding them): what ghost_trim can give back
+    { uint64_t gb = 0, kb[3] = {0}; unsigned gn = 0, ge;   // what the ring of finalized serials alone keeps (textures of their own allocation, no live serial holding them), and of it what
+      // ghost_trim could give back now (kb[0]), what it keeps as used lately (kb[1]) and what is not a packaged texture, which it never lets go (kb[2]). A texture several serials of the
+      // ring name is counted once, by the first of them
+      uint64_t nowf = atomic_load(&g_cur_frame); CFMutableSetRef lately = ghost_lately(nowf);
       pthread_mutex_lock(&g_smu); CFMutableSetRef once = CFSetCreateMutable(NULL, 0, NULL);
       for (uint32_t i = 0; i < g_ghost.cap; i++) { void *v = g_ghost.vals[i]; if (!v || CFSetContainsValue(once, v) || serial_table_holds(v)) continue; CFSetAddValue(once, v);
-          id o = (__bridge id)v; id<MTLTexture> t = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : [o respondsToSelector:@selector(textureType)] ? (id<MTLTexture>)o : nil;
-          if (t && !t.heap && !t.parentTexture) { gb += t.allocatedSize; gn++; } }
-      CFRelease(once); ge = g_ghost.n; pthread_mutex_unlock(&g_smu);
-      MLOG("finalized-serial ring up to frame %llu: %u entries, %u textures only it holds, %llu MB (the GPU memory guard trims it under memory pressure, DM_NVN_GHOST_TRIM_MIN)", frame, ge, gn, (unsigned long long)(gb >> 20)); }
+          id o = (__bridge id)v; int pkg = [o isKindOfClass:[NvPkg class]]; id<MTLTexture> t = pkg ? ((NvPkg *)o)->tex : [o respondsToSelector:@selector(textureType)] ? (id<MTLTexture>)o : nil;
+          if (t && !t.heap && !t.parentTexture) { uint64_t ser; memcpy(&ser, g_ghost.keys + (size_t)i * g_ghost.klen, sizeof ser);
+              gb += t.allocatedSize; gn++; kb[!pkg ? 2 : ghost_restorable(o, ser, nowf, lately) ? 0 : 1] += t.allocatedSize; } }
+      CFRelease(once); ge = g_ghost.n; pthread_mutex_unlock(&g_smu); CFRelease(lately);
+      MLOG("finalized-serial ring up to frame %llu: %u entries, %u textures only it holds, %llu MB: %llu MB the trim can let go now, %llu MB packaged and used lately, %llu MB not packaged (kept) (the GPU memory guard trims it under memory pressure, DM_NVN_GHOST_TRIM_MIN)",
+           frame, ge, gn, (unsigned long long)(gb >> 20), (unsigned long long)(kb[0] >> 20), (unsigned long long)(kb[1] >> 20), (unsigned long long)(kb[2] >> 20)); }
     if (g_gptr_draws) MLOG("bind-time pointers up to frame %llu: %llu sites encoded, %llu of them named a pool (%llu per mille); %llu raw-load shader bindings, %llu of them with a site empty or no site (they rely on the table)", frame, (unsigned long long)g_gptr_sites, (unsigned long long)g_gptr_filled, (unsigned long long)(g_gptr_sites ? g_gptr_filled * 1000 / g_gptr_sites : 0), (unsigned long long)g_gptr_draws, (unsigned long long)g_gptr_short);
     { void mtl_vc_stats(unsigned *, uint64_t *, uint64_t *), mtl_tb2_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *); uint64_t mtl_tex_mis_count(void); unsigned vn; uint64_t vh, vm, tb, tm, tf, tc, tcb;
       mtl_vc_stats(&vn, &vh, &vm); mtl_tb2_stats(&tb, &tm, &tf, &tc, &tcb);
@@ -6794,7 +6805,7 @@ typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view
                  void *alt, *alt_of; uint64_t alt_rid; uint8_t alt_type;   // alt: compatible view used when the shader's declared type differs from view (tex_fit), alt_of = the view it was built from
                  void *im, *im_of; uint64_t im_rid;                       // im: the view an image slot reads in the shader's pixel class (img_fit), im_of = the view it was built from
                  int prev, next, retired, gone; uint64_t transient_sub; uint8_t tt1;   // prev / next: descriptor index + 1, by texture serial; gone: its memory pool was finalized (treg_drop_pool_views)
-                 void *stand; uint64_t stand_rid, stand_sum, reg_frame; uint8_t stand_tt1, stand_no; } treg_t;   // stand: what its pool table entries hold while its texture is not made (pool_stand; retained), stand_tt1 its texture type + 1, stand_no: it can have none; reg_frame: the frame of the registration
+                 void *stand; uint64_t stand_rid, stand_sum, reg_frame; uint8_t stand_tt1, stand_no; uint32_t used_f; } treg_t;   // stand: what its pool table entries hold while its texture is not made (pool_stand; retained), stand_tt1 its texture type + 1, stand_no: it can have none; reg_frame: the frame of the registration
 static treg_t *g_treg; static int g_ntreg;
 static nvn_hmap g_treg_serial = {.klen = 8};   // serial → first registered descriptor index + 1, under g_rmu
 // Texture ID views are valid for an epoch (view_ser), not for every serial table change: ser_sync takes the notes (ser_note) and sends only the IDs registered with a noted serial
@@ -7105,12 +7116,33 @@ static void treg_drop_pool_views(const void *pool) {
 enum { POOL_SEEN_WORDS = (1u << 20) / 32 };
 static __strong id<MTLBuffer> g_seen_buf; static uint32_t g_seen_done[POOL_SEEN_WORDS]; static uint64_t g_seen_sub = ~0ull;
 static inline int pool_seen(int id_) { return id_ >= 0 && (g_seen_done[(unsigned)id_ >> 5] >> (id_ & 31) & 1); }
+// Which IDs shaders read lately: every SEEN_GEN frames pool_seen_scan takes the bitmap's bits as this generation's (g_seen_cur, the one before in g_seen_prev) and clears in the
+// GPU's bitmap those the host has already folded into g_seen_done, so a shader that still reads the ID sets its bit again (dm_pool_mark tests the bit with a plain load: a stale 1
+// skips one mark, which the next pixel or frame makes). g_seen_done keeps every bit, so nothing else changes. Read with the bitmap's own bits: the last SEEN_GEN to 2 x SEEN_GEN
+// frames. Under g_rmu, as g_seen_done
+enum { SEEN_GEN = 30 };
+static uint32_t g_seen_cur[POOL_SEEN_WORDS], g_seen_prev[POOL_SEEN_WORDS]; static uint64_t g_seen_gen_f;
+static inline int pool_seen_lately(int id_) {
+    unsigned i = (unsigned)id_ >> 5; uint32_t b = 1u << (id_ & 31);
+    return id_ >= 0 && i < POOL_SEEN_WORDS && ((g_seen_cur[i] | g_seen_prev[i] | (g_seen_buf ? ((const uint32_t *)g_seen_buf.contents)[i] : 0)) & b) != 0;
+}
 // An ID given another texture has not been read as that texture
 static void pool_seen_clear(int id_) {
     if (id_ < 0 || id_ >= (int)(POOL_SEEN_WORDS * 32)) return;
     uint32_t b = 1u << (id_ & 31);
-    g_seen_done[(unsigned)id_ >> 5] &= ~b;
+    g_seen_done[(unsigned)id_ >> 5] &= ~b; g_seen_cur[(unsigned)id_ >> 5] &= ~b; g_seen_prev[(unsigned)id_ >> 5] &= ~b;
     if (g_seen_buf) atomic_fetch_and((_Atomic uint32_t *)g_seen_buf.contents + ((unsigned)id_ >> 5), ~b);
+}
+// The serials of the IDs a shader read through a pool or the host resolved for a binding in the last GHOST_LATELY frames: what ghost_trim keeps whatever its age. A retired ID still
+// names its finalized serial (its registration's snapshot), which is how a texture the game let go is still drawn. Takes g_rmu; the caller releases the set
+static CFMutableSetRef ghost_lately(uint64_t now) {
+    CFMutableSetRef s = CFSetCreateMutable(NULL, 0, NULL);
+    os_unfair_lock_lock(&g_rmu);
+    for (int id_ = 1; id_ < g_ntreg; id_++) { const treg_t *r = &g_treg[id_];
+        if (!r->ok || !r->t.serial) continue;
+        if (pool_seen_lately(id_) || (r->used_f && now + 1 < (uint64_t)r->used_f + GHOST_LATELY)) CFSetAddValue(s, (const void *)(uintptr_t)r->t.serial); }
+    os_unfair_lock_unlock(&g_rmu);
+    return s;
 }
 void mtl_reg_tex_gone(int tid) {
     os_unfair_lock_lock(&g_rmu);
@@ -7138,7 +7170,7 @@ void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
         int keep_it = keep && t && rr->ok && (rr->retired || rr->view);
         reg_bump(id_, 0); if (!keep_it) pool_seen_clear(id_);
         treg_unlink(id_); treg_drop_views(rr); treg_drop_stand(rr);
-        rr->tt1 = 0; rr->reg_frame = atomic_load(&g_cur_frame);
+        rr->tt1 = 0; rr->reg_frame = atomic_load(&g_cur_frame); rr->used_f = 0;   // another texture: not used as that yet (ghost_lately)
         rr->ok = t != NULL; if (t) rr->t = *t; rr->has_v = v != NULL; if (v) rr->v = *v;
         rr->retired = 0; rr->transient_sub = 0;
         if (t && t->serial) {
@@ -7350,7 +7382,10 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
     return v;
 }
 // Hot-path object fetch: if the table entry is valid, return the table-held pointer directly (without ARC retain / autorelease), otherwise take the slow path to build / validate. Caller holds g_rmu.
+// used_f: the frame + 1 an ID was last resolved for a binding (tex_fast, tex_fast_rid), for ghost_lately; the pool walks put back what it was (they resolve every ID of a table)
+static inline __attribute__((always_inline)) void treg_used(int tid) { if (tid > 0 && tid < g_ntreg) g_treg[tid].used_f = (uint32_t)atomic_load_explicit(&g_cur_frame, memory_order_relaxed) + 1; }
 static inline __attribute__((always_inline)) void *tex_fast(int tid) {
+    treg_used(tid);
     uint64_t ep = treg_ep();   // first: a sync clears view_ser of the IDs whose serials changed, which the test below must see
     if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == ep && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now())) return g_treg[tid].view;
     return (__bridge void *)tex_by_id(tid);
@@ -7517,6 +7552,7 @@ static id<MTLTexture> tex_float_fit(int tid, id<MTLTexture> t, uint64_t *rid) {
     *rid = r->im_rid; return v;
 }
 static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
+    treg_used(tid);
     uint64_t ep = treg_ep();   // first, as in tex_fast
     if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == ep && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now())) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
     id<MTLTexture> t = tex_by_id(tid); if (out) *out = (__bridge void *)t;
@@ -10920,6 +10956,11 @@ static void pool_seen_scan(void) {
                (unsigned long long)f, (unsigned long long)g_stand_made, g_stand_ns / 1e6, (unsigned long long)g_stand_picked, (unsigned long long)g_stand_done, (unsigned long long)g_stand_live, g_nstand_heap, (unsigned)(STAND_HEAP >> 20), (unsigned long long)g_stand_full, g_stand_todo_n, (unsigned long long)g_first_stand,
                g_first_stale ? [NSString stringWithFormat:@" (%llu written since the stand-in was made)", (unsigned long long)g_first_stale].UTF8String : "", (unsigned long long)g_first_dummy, (unsigned long long)g_first_dummy_big); } }
     const uint32_t *w = (const uint32_t *)g_seen_buf.contents; unsigned words = MIN((unsigned)g_ntreg / 32 + 1, (unsigned)POOL_SEEN_WORDS);
+    if (f >= g_seen_gen_f + SEEN_GEN || f < g_seen_gen_f) {   // a new generation of "read lately" (pool_seen_lately): bits not folded yet stay for the loop below
+        g_seen_gen_f = f;
+        for (unsigned i = 0; i < words; i++) { uint32_t v = w[i]; g_seen_prev[i] = g_seen_cur[i]; g_seen_cur[i] = v;
+            uint32_t clr = v & g_seen_done[i]; if (clr) atomic_fetch_and((_Atomic uint32_t *)g_seen_buf.contents + i, ~clr); }
+    }
     for (unsigned i = 0; i < words; i++) {
         uint32_t fresh = w[i] & ~g_seen_done[i];
         if (fresh) { g_seen_done[i] |= fresh; g_seen_todo[i] |= fresh; for (uint32_t bits = fresh; bits; bits &= bits - 1) { pool_ds_note((int)i * 32 + __builtin_ctz(bits)); pool_first_read((int)i * 32 + __builtin_ctz(bits), f); } }
@@ -10930,7 +10971,7 @@ static void pool_seen_scan(void) {
             int need_make = !g_treg[id_].view && !tex_already_made(&g_treg[id_].t);
             if (need_make) { if (g_walk_req >= POOL_REQ_BYTES) return; g_walk_req += pool_tex_size(&g_treg[id_].t); }
             g_seen_todo[i] &= ~(1u << b);
-            void *tv = NULL; uint64_t tr = tex_fast_rid(id_, &tv); if (!tv || !tr) continue;
+            uint32_t uf = g_treg[id_].used_f; void *tv = NULL; uint64_t tr = tex_fast_rid(id_, &tv); g_treg[id_].used_f = uf; if (!tv || !tr) continue;
             MTLTextureType tt = ((__bridge id<MTLTexture>)tv).textureType; int trans = g_ntreg <= 2048 && g_treg[id_].retired && g_treg[id_].transient_sub == g_sub_serial;
             for (int k = 0; k < POOL_SNAPS; k++) { pool_snap *q = &g_psnap[k]; int at = id_ - q->base;
                 if (!q->buf || q->samp || at < 0 || (uint32_t)at >= *(uint32_t *)q->buf.contents || (MTLTextureType)q->dtt != tt) continue;
@@ -10985,7 +11026,7 @@ static uint64_t pool_entry(int samp, int dtt, int id_, uint64_t limit, int *gone
     if (need_make && pool_tex_size(&r->t) > limit && !(pool_seen(id_) && g_walk_req < POOL_REQ_BYTES)) { ++*left; *left_req += pool_seen(id_); return pool_stand(id_, dtt); }   // a texture a shader read is made whatever the budget, so it reads the dummy for a few frames at most
     if (r->tt1 && r->tt1 - 1 != dtt) return 0;   // an ID of another texture type, seen before (the table holds only its own type): nothing to look up or charge (the idea is from PR 1428)
     if (need_make) { g_walk_spent += pool_tex_size(&r->t); if (pool_seen(id_)) g_walk_req += pool_tex_size(&r->t); }
-    void *tv = NULL; uint64_t tr = tex_fast_rid(id_, &tv);
+    uint32_t uf = g_treg[id_].used_f; void *tv = NULL; uint64_t tr = tex_fast_rid(id_, &tv); g_treg[id_].used_f = uf;   // a walk is no use of the ID
     if (!tv) return 0;
     MTLTextureType got = ((__bridge id<MTLTexture>)tv).textureType; g_treg[id_].tt1 = (uint8_t)got + 1;
     if (got != (MTLTextureType)dtt) return 0;
