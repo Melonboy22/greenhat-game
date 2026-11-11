@@ -41,6 +41,11 @@ int main(int argc, char **argv) { @autoreleasepool {
         for (uint64_t i = 0; i < 1500; i++) { id<MTLTexture> t = [g_dev newTextureWithDescriptor:d]; res_add(t); tex_put(8000000 + i, t); }
         mtl_mem_relief(); guard_act(0);
         CHECK("guard_act carries out the relief: the ring down to an eighth of its floor (128)", g_ghost.n == 128 && !relief());
+        // Through a submission with the guard at no level, as when the system has memory to give: the submit thread calls guard_act for the relief alone
+        for (uint64_t i = 0; i < 1500; i++) { id<MTLTexture> t = [g_dev newTextureWithDescriptor:d]; res_add(t); tex_put(8100000 + i, t); }
+        atomic_store(&g_guard_lv, GUARD_OK); mtl_mem_relief();
+        mtl_sub_begin(); CHECK("the submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
+        CHECK("a submission with the guard calm carries out the relief", g_ghost.n == 128 && !relief());
         mtl_drain(); defer_drain();
     }
     printf("t_mem_watchdog%s%s: %d checks, %d failed\n", *mode ? " " : "", mode, checks, failed);

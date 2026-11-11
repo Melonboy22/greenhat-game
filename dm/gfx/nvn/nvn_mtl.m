@@ -438,6 +438,7 @@ static void res_check(id r, const char *what, int reg) {
 enum { GUARD_OK, GUARD_EVICT, GUARD_STOP, GUARD_WALL, GUARD_EVERY = 30, GUARD_TICKS = 10 };   // the evictions are at least GUARD_EVERY frames apart; the timer stops the game after GUARD_TICKS ticks over the stop level
 static struct { uint64_t evict, stop, wall; } g_guard;   // bytes, all 0 with the guard off: the eviction level, the stop level, the size no commit grows past
 static _Atomic int g_guard_lv;   // the highest level met since the submit thread last looked (guard_act)
+static _Atomic int g_relief_req;   // the memory watchdog asks for a relief (mtl_mem_relief); the submit thread carries it out at its next guard_act, which it calls for it even with the guard at no level
 static _Atomic uint64_t g_guard_set;   // the residency set's size at the last commit: the timer does not read the set, whose lock a stuck commit holds
 // The system's side of the guard: GPU memory is wired out of the same RAM as everything else, and on a 16 GB Mac the system can run out before the residency set reaches Metal's
 // working set. Ocarina of Time with every pool resident (DM_NVN_GMEM_ALL=1, M2 Pro, 12,124 MB working set): a kernel panic at 10,463 MB wired with 48 MB free (3 GB compressed),
@@ -2538,7 +2539,7 @@ uint64_t mtl_sub_commit(void) {
     defer_idle_commit();   // a feedback handler that drained since this submission's own commit saw it open
     g_commit_blocks = nil;
     objc_autoreleasePoolPop(g_sub_pool); g_sub_pool = NULL;
-    if (atomic_load_explicit(&g_guard_lv, memory_order_relaxed)) guard_act(fence); else alias_sweep();
+    if (atomic_load_explicit(&g_guard_lv, memory_order_relaxed) || atomic_load_explicit(&g_relief_req, memory_order_relaxed)) guard_act(fence); else alias_sweep();   // a relief the watchdog asked for runs with the guard calm too
     return fence;
 }
 
@@ -6897,7 +6898,6 @@ static void guard_evict(int force) { @autoreleasepool {
         MLOG("GPU memory guard: %llu MB allocated (it lets go from %llu MB): %u idle sharing entries, %u spare textures, %u staging blocks, %u finalized serials of the ring (%u left) let go", (unsigned long long)(g_dev.currentAllocatedSize >> 20), (unsigned long long)(g_guard.evict >> 20), entries, spares, staging, ghosts, g_ghost.n);
 } }
 // On the submit thread, after a submission, with no lock held. The stop level gives the eviction its chance first: this submission's fence, then the sizes again
-static _Atomic int g_relief_req;   // the memory watchdog asks for a relief (mtl_mem_relief); the submit thread carries it out at its next guard_act
 void mtl_mem_relief(void) { atomic_store(&g_relief_req, 1); }
 int mtl_mem_sys_low(void) { return atomic_load(&g_sys_margin) && atomic_load(&g_sys_lv) >= GUARD_EVICT; }   // the guard's system side at its eviction level or past it
 static void guard_act(uint64_t fence) {
