@@ -2925,6 +2925,28 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
     count_add(m == &g_by_serial ? &g_by_serial_held : &g_ghost_held, (__bridge void *)o, 1);
     pthread_mutex_unlock(&g_smu);
 }
+// Under memory pressure (the GPU memory guard's eviction level, guard_evict), the ring of finalized serials gives back its oldest half, down to DM_NVN_GHOST_TRIM_MIN entries
+// (default 2048, about 5 s of Ocarina of Time's 400 finalizes a second; 0 turns this off); force (the stop level) goes straight to that floor. The ring holds 32,768 so that retired IDs
+// still drawn keep their textures (PR #1731: wall and tunnel fixtures went missing with 512), which is about 80 s of an area left behind: on a 16 GB Mac (Hyrule Field after 15 minutes,
+// 31,987 entries) the guard found nothing else to let go and ended the game. A trimmed serial resolves anew (ser_note): a retired ID a shader still reads has its texture made again
+// from its storage, as at a cold start; a render target's content is not in its storage, so one still read after 5 s would show as cleared. Each texture goes behind the fences of the
+// submissions that may use it (obj_drop), as the ring's own eviction does
+static unsigned ghost_trim(int force) {
+    static long floor_ = -1; if (floor_ < 0) { const char *e = getenv("DM_NVN_GHOST_TRIM_MIN"); floor_ = e && *e ? atol(e) : 2048; if (floor_ < 0) floor_ = 0; }
+    if (!floor_) return 0;
+    unsigned cap = ghost_cap(), n = 0;
+    pthread_mutex_lock(&g_smu);
+    unsigned have = g_ghost.n, keep = force ? (unsigned)floor_ : MAX((unsigned)floor_, have / 2);
+    for (unsigned i = 0; i < cap && have > keep; i++) {   // oldest first: the slot after the last written
+        uint64_t *slot = &g_ghost_ring[(g_ghost_next + i) % cap];
+        if (!*slot) continue;
+        if (!nvn_hm_get(&g_ghost, slot)) { *slot = 0; continue; }   // already gone (ghost_purge)
+        id ev = hm_get_id(&g_ghost, slot); if (ev) { ghost_held_add((__bridge void *)ev, -1); obj_drop(ev); }
+        hm_del_id(&g_ghost, slot); ser_note(*slot); *slot = 0; n++; have--;
+    }
+    pthread_mutex_unlock(&g_smu);
+    return n;
+}
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
 // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
@@ -5008,6 +5030,13 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
 #endif
     MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (%u of them unreferenced; evicted with pools %llu, on storage takeover %llu, idle %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total), retired but held by a serial %u, recycled render-target heaps made %llu, reused %llu, freed %llu, waiting %u (%llu MB); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, aorph, (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)g_alias_idle, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, nwait,
          (unsigned long long)g_rh_made, (unsigned long long)g_rh_reused, (unsigned long long)g_rh_trimmed, rh_n, (unsigned long long)(rh_bytes >> 20), avail);
+    { uint64_t gb = 0; unsigned gn = 0, ge;   // what the ring of finalized serials alone keeps (textures of their own allocation, no live serial holding them): what ghost_trim can give back
+      pthread_mutex_lock(&g_smu); CFMutableSetRef once = CFSetCreateMutable(NULL, 0, NULL);
+      for (uint32_t i = 0; i < g_ghost.cap; i++) { void *v = g_ghost.vals[i]; if (!v || CFSetContainsValue(once, v) || serial_table_holds(v)) continue; CFSetAddValue(once, v);
+          id o = (__bridge id)v; id<MTLTexture> t = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : [o respondsToSelector:@selector(textureType)] ? (id<MTLTexture>)o : nil;
+          if (t && !t.heap && !t.parentTexture) { gb += t.allocatedSize; gn++; } }
+      CFRelease(once); ge = g_ghost.n; pthread_mutex_unlock(&g_smu);
+      MLOG("finalized-serial ring up to frame %llu: %u entries, %u textures only it holds, %llu MB (the GPU memory guard trims it under memory pressure, DM_NVN_GHOST_TRIM_MIN)", frame, ge, gn, (unsigned long long)(gb >> 20)); }
     if (g_gptr_draws) MLOG("bind-time pointers up to frame %llu: %llu sites encoded, %llu of them named a pool (%llu per mille); %llu raw-load shader bindings, %llu of them with a site empty or no site (they rely on the table)", frame, (unsigned long long)g_gptr_sites, (unsigned long long)g_gptr_filled, (unsigned long long)(g_gptr_sites ? g_gptr_filled * 1000 / g_gptr_sites : 0), (unsigned long long)g_gptr_draws, (unsigned long long)g_gptr_short);
     { void mtl_vc_stats(unsigned *, uint64_t *, uint64_t *), mtl_tb2_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *); uint64_t mtl_tex_mis_count(void); unsigned vn; uint64_t vh, vm, tb, tm, tf, tc, tcb;
       mtl_vc_stats(&vn, &vh, &vm); mtl_tb2_stats(&tb, &tm, &tf, &tc, &tcb);
@@ -6848,10 +6877,10 @@ static void guard_evict(int force) { @autoreleasepool {
     static uint64_t last; uint64_t f = atomic_load(&g_cur_frame) + 1;
     if (!force && last && f - last < GUARD_EVERY) return;
     last = f;
-    unsigned entries = alias_evict_idle(ALIAS_IDLE), spares = pkg_trim(), staging = up_trim();
+    unsigned entries = alias_evict_idle(ALIAS_IDLE), spares = pkg_trim(), staging = up_trim(), ghosts = ghost_trim(force);
     defer_drain(); res_commit();
-    static uint64_t lines; if (entries + spares + staging && lines++ < 16)
-        MLOG("GPU memory guard: %llu MB allocated (it lets go from %llu MB): %u idle sharing entries, %u spare textures, %u staging blocks let go", (unsigned long long)(g_dev.currentAllocatedSize >> 20), (unsigned long long)(g_guard.evict >> 20), entries, spares, staging);
+    static uint64_t lines; if (entries + spares + staging + ghosts && lines++ < 48)
+        MLOG("GPU memory guard: %llu MB allocated (it lets go from %llu MB): %u idle sharing entries, %u spare textures, %u staging blocks, %u finalized serials of the ring (%u left) let go", (unsigned long long)(g_dev.currentAllocatedSize >> 20), (unsigned long long)(g_guard.evict >> 20), entries, spares, staging, ghosts, g_ghost.n);
 } }
 // On the submit thread, after a submission, with no lock held. The stop level gives the eviction its chance first: this submission's fence, then the sizes again
 static void guard_act(uint64_t fence) {
