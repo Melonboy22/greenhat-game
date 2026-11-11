@@ -452,8 +452,21 @@ static int guard_level(uint64_t used) {
     int sys = atomic_load_explicit(&g_sys_lv, memory_order_relaxed);
     return sys > lv ? sys : lv;
 }
+// The margin's way down (guard_pressure): once the system has said pressure is back to normal, one 512 MB step towards the base per DM_NVN_SYS_MARGIN_DECAY_S seconds (default 300)
+// with no warning in between; g_margin_normal is the time of the last step or of the normal event (0: none since the last warning)
+static _Atomic uint64_t g_margin_normal;
+static uint64_t margin_decay_ns(void) { static long long s = -1; if (s < 0) { const char *e = getenv("DM_NVN_SYS_MARGIN_DECAY_S"); s = e && *e ? atoll(e) : 300; if (s < 0) s = 0; } return (uint64_t)s * 1000000000ull; }
+static void margin_decay(void) {
+    uint64_t since = atomic_load(&g_margin_normal), base = atomic_load(&g_sys_margin_base), cur = atomic_load(&g_sys_margin), now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (!since || !base || cur <= base || now - since < margin_decay_ns()) return;
+    uint64_t nm = cur - (512ull << 20); if (nm < base) nm = base;
+    if (!atomic_compare_exchange_strong(&g_sys_margin, &cur, nm)) return;
+    atomic_store(&g_margin_normal, now);
+    MLOG("GPU memory guard: no memory pressure warning for %llu s: the margin is now %llu MB", (unsigned long long)(margin_decay_ns() / 1000000000ull), (unsigned long long)(nm >> 20));
+}
 static void guard_sys_tick(void) {
     static uint64_t mem; static int said;
+    margin_decay();
     uint64_t margin = atomic_load_explicit(&g_sys_margin, memory_order_relaxed); if (!margin) return;
     if (!mem) { size_t n = sizeof mem; if (sysctlbyname("hw.memsize", &mem, &n, NULL, 0) || !mem) { atomic_store(&g_sys_margin, 0); return; } }
     int level = 0; size_t n = sizeof level;
@@ -703,15 +716,16 @@ static void guard_stop(uint64_t used) {
 }
 // The submit thread decides while it comes round (guard_act). Past the working set, or a second over the stop level, it does not
 // The system's memory pressure events (a dispatch source, guard_init): a warning or a critical event raises the margin by 512 MB, up to 4 GB, as kern.memorystatus_level then
-// overstates what the system can give; the event that pressure is back to normal takes it back to where it started. Without that the margin only grew: on a 16 GB M5, three
-// warnings spread over half an hour of Ocarina of Time took it to 2,560 MB, the guard flushed every 30 frames with a quarter of memory free, and the earlier run that reached
-// that margin was ended with 2,457 MB still to give. A warning that comes again raises it again from the base
+// overstates what the system can give; once the system says pressure is back to normal, the margin comes down a step at a time (margin_decay). Without that the margin only grew:
+// on a 16 GB M5, three warnings over half an hour of Ocarina of Time took it to 2,560 MB. Taken straight back to the base on the normal event, as at first, it let the game run on
+// with 18-25 % reported available while it paged (6-16 fps): the normal events came while the game was at its slowest
 static void guard_pressure(unsigned long flags) {
     uint64_t base = atomic_load(&g_sys_margin_base), cur = atomic_load(&g_sys_margin), nm;
     if (!base) return;
     if (flags & (DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL)) { nm = cur + (512ull << 20); if (nm > (4096ull << 20)) nm = MAX(4096ull << 20, base); }
-    else if (flags & DISPATCH_MEMORYPRESSURE_NORMAL) nm = base;
+    else if (flags & DISPATCH_MEMORYPRESSURE_NORMAL) { if (!atomic_load(&g_margin_normal)) atomic_store(&g_margin_normal, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); MLOG("GPU memory guard: the system reports memory pressure back to normal (%lu): the margin of %llu MB comes down a step per %llu s from here", flags, (unsigned long long)(cur >> 20), (unsigned long long)(margin_decay_ns() / 1000000000ull)); return; }
     else return;
+    atomic_store(&g_margin_normal, 0);   // a warning: the way down starts again at the next normal event
     atomic_store(&g_sys_margin, nm);
     if (nm != cur) MLOG("GPU memory guard: the system reports memory pressure %s (%lu): the margin is now %llu MB", flags & DISPATCH_MEMORYPRESSURE_NORMAL && !(flags & (DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL)) ? "back to normal" : "raised", flags, (unsigned long long)(nm >> 20));
     guard_sys_tick();
@@ -2939,24 +2953,31 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
     count_add(m == &g_by_serial ? &g_by_serial_held : &g_ghost_held, (__bridge void *)o, 1);
     pthread_mutex_unlock(&g_smu);
 }
-// Under memory pressure (the GPU memory guard's eviction level, guard_evict), the ring of finalized serials gives back its oldest half, down to DM_NVN_GHOST_TRIM_MIN entries
-// (default 2048, about 5 s of Ocarina of Time's 400 finalizes a second; 0 turns this off); force (the stop level) goes straight to that floor, and force 2 (the memory watchdog over its
+// Under memory pressure the ring of finalized serials gives back entries, oldest first, down to DM_NVN_GHOST_TRIM_MIN entries (default 2048, about 5 s of Ocarina of Time's 400
+// finalizes a second; 0 turns this off): only at the guard's stop level (force 1, straight to that floor) and for the memory watchdog over its cap (force 2, an eighth of it), not at the
+// eviction level (force 0), and only entries that can be made again as they were and were not used for GHOST_TRIM_IDLE frames (ghost_restorable: a packaged texture, uploaded from
+// storage the game wrote). At the eviction level it trimmed 48 times in 24 minutes on a 16 GB M5 and each trim was followed by a burst of first uploads (6,808 trimmed, 1,513 made again
+// in the next 300 frames): retired IDs the shaders still read resolve through the ring for minutes, and a GPU-written texture made again reads cleared (Kakariko Village's grass went
+// missing); 26,098 first uploads against about 4,000 the run before, and 6-16 fps. Formerly: force 2 (the memory watchdog over its
 // cap, mtl_mem_relief) to an eighth of it: in an area of large textures the floor's 2,048 entries alone held 500 MB. The ring holds 32,768 so that retired IDs
 // still drawn keep their textures (PR #1731: wall and tunnel fixtures went missing with 512), which is about 80 s of an area left behind: on a 16 GB Mac (Hyrule Field after 15 minutes,
 // 31,987 entries) the guard found nothing else to let go and ended the game. A trimmed serial resolves anew (ser_note): a retired ID a shader still reads has its texture made again
 // from its storage, as at a cold start; a render target's content is not in its storage, so one still read after 5 s would show as cleared. Each texture goes behind the fences of the
 // submissions that may use it (obj_drop), as the ring's own eviction does
+enum { GHOST_TRIM_IDLE = 600 };   // frames (10 s at 60 fps) since a packaged texture was last resolved (NvPkg used)
+static int ghost_restorable(id o, uint64_t now);   // after NvPkg's interface
 static unsigned ghost_trim(int force) {
     static long floor_ = -1; if (floor_ < 0) { const char *e = getenv("DM_NVN_GHOST_TRIM_MIN"); floor_ = e && *e ? atol(e) : 2048; if (floor_ < 0) floor_ = 0; }
-    if (!floor_) return 0;
-    unsigned cap = ghost_cap(), n = 0;
+    if (!floor_ || !force) return 0;
+    unsigned cap = ghost_cap(), n = 0; uint64_t now = atomic_load(&g_cur_frame);
     pthread_mutex_lock(&g_smu);
     unsigned have = g_ghost.n, keep = force >= 2 ? MAX(64u, (unsigned)floor_ / 8) : force ? (unsigned)floor_ : MAX((unsigned)floor_, have / 2);   // 2: the memory watchdog's relief (mtl_mem_relief)
     for (unsigned i = 0; i < cap && have > keep; i++) {   // oldest first: the slot after the last written
         uint64_t *slot = &g_ghost_ring[(g_ghost_next + i) % cap];
         if (!*slot) continue;
         if (!nvn_hm_get(&g_ghost, slot)) { *slot = 0; continue; }   // already gone (ghost_purge)
-        id ev = hm_get_id(&g_ghost, slot); if (ev) { ghost_held_add((__bridge void *)ev, -1); obj_drop(ev); }
+        id ev = hm_get_id(&g_ghost, slot); if (!ghost_restorable(ev, now)) continue;   // GPU-written, or used lately: kept
+        if (ev) { ghost_held_add((__bridge void *)ev, -1); obj_drop(ev); }
         hm_del_id(&g_ghost, slot); ser_note(*slot); *slot = 0; n++; have--;
     }
     pthread_mutex_unlock(&g_smu);
@@ -2973,6 +2994,12 @@ static unsigned ghost_trim(int force) {
 @implementation NvPkg
 - (void)dealloc { defer_obj_release(tex); defer_obj_release(spare); free(edge[0]); free(edge[1]); }
 @end
+// What ghost_trim may let go: a packaged texture (its content is in its storage, so made again it is the same; not a sparse one, whose tiles follow the game's mappings) that was not
+// resolved for GHOST_TRIM_IDLE frames. A render target or a texture the GPU wrote is never let go: made again from storage it would read cleared. Caller holds g_smu
+static int ghost_restorable(id o, uint64_t now) {
+    if (![o isKindOfClass:[NvPkg class]]) return 0;
+    NvPkg *pk = o; return !pk->sparse && !pk->ps && now >= pk->used + GHOST_TRIM_IDLE;
+}
 // Packaged textures by storage and description. Engines make many texture objects over one texture's bytes, each with a serial of its own: Ocarina of Time's 32,768 registered IDs name 3,607 storages,
 // 2.0 GB, and an upload per serial took 6 GB, past what a 16 GB Mac can keep wired once the pools are added. A new serial with the same storage and description takes the same NvPkg, so its
 // dirty-page checks and re-uploads are one. Weak: the serials' entries own it, and a table entry never keeps one alive. Under g_smu; a pool's entries go when it is finalized (mtl_alias_drop_pool)

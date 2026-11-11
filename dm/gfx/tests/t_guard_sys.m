@@ -13,6 +13,7 @@ static int checks, failed;
 #define CHECK(c, s) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", s); } } while (0)
 int main(void) { @autoreleasepool {
     setenv("DM_NVN_SYS_MARGIN_MB", "1048576", 1);   // a 1 TB margin: the system never has that much left
+    setenv("DM_NVN_SYS_MARGIN_DECAY_S", "0", 1);   // the margin comes down a step at each tick (margin_decay)
     mtl_init();
     CHECK(atomic_load(&g_sys_margin) == (1048576ull << 20), "the margin comes from DM_NVN_SYS_MARGIN_MB");
     guard_sys_tick();
@@ -25,16 +26,23 @@ int main(void) { @autoreleasepool {
     uint64_t avail = atomic_load(&g_sys_avail);
     atomic_store(&g_sys_margin, avail / 2 + (64ull << 20)); guard_sys_tick();   // between the margin and twice it, unless the system moved by more than 64 MB in between
     CHECK(atomic_load(&g_sys_lv) == GUARD_EVICT, "available memory between the margin and twice it: evict");
-    // Memory pressure events (guard_pressure): a warning raises the margin by 512 MB, up to 4 GB; back to normal returns it to the base
+    // Memory pressure events (guard_pressure): a warning raises the margin by 512 MB, up to 4 GB; back to normal, it comes down a step per DM_NVN_SYS_MARGIN_DECAY_S (0 here: a step at
+    // each tick) with no warning in between (margin_decay)
     atomic_store(&g_sys_margin_base, 1024ull << 20); atomic_store(&g_sys_margin, 1024ull << 20);
     guard_pressure(DISPATCH_MEMORYPRESSURE_WARN); guard_pressure(DISPATCH_MEMORYPRESSURE_WARN); guard_pressure(DISPATCH_MEMORYPRESSURE_CRITICAL);
     CHECK(atomic_load(&g_sys_margin) == (2560ull << 20), "three pressure events raise the margin to 2,560 MB");
     for (int i = 0; i < 8; i++) guard_pressure(DISPATCH_MEMORYPRESSURE_WARN);
     CHECK(atomic_load(&g_sys_margin) == (4096ull << 20), "the raised margin stops at 4 GB");
+    guard_sys_tick(); CHECK(atomic_load(&g_sys_margin) == (4096ull << 20), "no normal event yet: the margin stays");
     guard_pressure(DISPATCH_MEMORYPRESSURE_NORMAL);
-    CHECK(atomic_load(&g_sys_margin) == (1024ull << 20), "pressure back to normal: the margin returns to its base");
+    CHECK(atomic_load(&g_sys_margin) == (4096ull << 20), "pressure back to normal: the margin is not dropped at once");
+    guard_sys_tick(); CHECK(atomic_load(&g_sys_margin) == (3584ull << 20), "a decay period later: one 512 MB step down");
+    guard_sys_tick(); guard_sys_tick(); CHECK(atomic_load(&g_sys_margin) == (2560ull << 20), "a step per period");
     guard_pressure(DISPATCH_MEMORYPRESSURE_WARN);
-    CHECK(atomic_load(&g_sys_margin) == (1536ull << 20), "a later warning raises it again from the base");
+    CHECK(atomic_load(&g_sys_margin) == (3072ull << 20), "a warning raises it again from where it is");
+    guard_sys_tick(); CHECK(atomic_load(&g_sys_margin) == (3072ull << 20), "after a warning no step down until the next normal event");
+    guard_pressure(DISPATCH_MEMORYPRESSURE_NORMAL); for (int i = 0; i < 10; i++) guard_sys_tick();
+    CHECK(atomic_load(&g_sys_margin) == (1024ull << 20), "the steps stop at the base");
     atomic_store(&g_sys_margin_base, 0); atomic_store(&g_sys_margin, 0); guard_pressure(DISPATCH_MEMORYPRESSURE_WARN);
     CHECK(atomic_load(&g_sys_margin) == 0, "with the system side off (margin 0) pressure events change nothing");
     atomic_store(&g_sys_margin, 0); atomic_store(&g_sys_lv, GUARD_OK); guard_sys_tick();

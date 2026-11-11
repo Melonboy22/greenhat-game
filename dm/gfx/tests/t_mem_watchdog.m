@@ -38,11 +38,12 @@ int main(int argc, char **argv) { @autoreleasepool {
         // The relief on the submit thread: guard_act takes the request and trims the ring to an eighth of its floor
         setenv("DM_NVN_GHOST_TRIM_MIN", "1024", 1); mtl_init(); sys(0);
         MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:16 height:16 mipmapped:NO]; d.storageMode = MTLStorageModePrivate;
-        for (uint64_t i = 0; i < 1500; i++) { id<MTLTexture> t = [g_dev newTextureWithDescriptor:d]; res_add(t); tex_put(8000000 + i, t); }
+        atomic_store(&g_cur_frame, 100000);   // packaged textures idle since frame 0: what the relief may let go (ghost_restorable)
+        for (uint64_t i = 0; i < 1500; i++) { NvPkg *pk = [NvPkg new]; pk->tex = [g_dev newTextureWithDescriptor:d]; res_add(pk->tex); tex_put(8000000 + i, pk); }
         mtl_mem_relief(); guard_act(0);
         CHECK("guard_act carries out the relief: the ring down to an eighth of its floor (128)", g_ghost.n == 128 && !relief());
         // Through a submission with the guard at no level, as when the system has memory to give: the submit thread calls guard_act for the relief alone
-        for (uint64_t i = 0; i < 1500; i++) { id<MTLTexture> t = [g_dev newTextureWithDescriptor:d]; res_add(t); tex_put(8100000 + i, t); }
+        for (uint64_t i = 0; i < 1500; i++) { NvPkg *pk = [NvPkg new]; pk->tex = [g_dev newTextureWithDescriptor:d]; res_add(pk->tex); tex_put(8100000 + i, pk); }
         atomic_store(&g_guard_lv, GUARD_OK); mtl_mem_relief();
         mtl_sub_begin(); CHECK("the submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
         CHECK("a submission with the guard calm carries out the relief", g_ghost.n == 128 && !relief());
