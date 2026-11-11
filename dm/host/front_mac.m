@@ -141,10 +141,54 @@ static void cursor_hide_for_input(void) {
     NSView *v = g_win.contentView;
     if (NSPointInRect([v convertPoint:g_win.mouseLocationOutsideOfEventStream fromView:nil], v.bounds)) [NSCursor setHiddenUntilMouseMoves:YES];
 }
+// Keyboard and mouse mode (DM_KBM=1, the launcher's Keyboard and mouse; off: the keys below and the mouse as the touch screen, as before). From ninboy-hat-for-macos (Pranav Krishna
+// Dupati, MIT), an Ocarina of Time layout (kbm_key_bit): WASD the left stick; the mouse turns the camera (the right stick) once a click in the picture has captured it, and Escape lets it
+// go; left click Y (the sword), right click and Shift R (the shield), middle click and Z ZL (Z-targeting). The mouse's movement deflects the right stick by DM_MOUSE_SENS (0.1-10, default 1)
+// and lets go 60 ms after it stops
+static int kbm_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_KBM"); v = e && atoi(e) == 1; if (v) LOG("front end: keyboard and mouse mode (DM_KBM): WASD moves, a click in the picture captures the mouse for the camera, Escape lets it go"); }
+    return v;
+}
+static int g_mouse_captured; static int32_t g_mouse_rx, g_mouse_ry; static uint64_t g_kbm_btn;   // the camera's deflection and the buttons the mouse and Shift hold (main thread)
+static NSTimer *g_mouse_rest;
+static void mouse_capture(int on) {
+    if (on == g_mouse_captured) return;
+    g_mouse_captured = on;
+    CGAssociateMouseAndMouseCursorPosition(on ? false : true);   // captured: the pointer stays where it is and only the movement comes through
+    if (on) [NSCursor hide]; else [NSCursor unhide];
+}
 static void push(void) {
     int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
-    int32_t rx = (g_rr - g_rl) * 32767, ry = (g_ru - g_rd) * 32767;
-    dm_input_set(g_btn, lx, ly, rx, ry);
+    int32_t rx = (g_rr - g_rl) * 32767 + g_mouse_rx, ry = (g_ru - g_rd) * 32767 + g_mouse_ry;
+    rx = rx > 32767 ? 32767 : rx < -32767 ? -32767 : rx; ry = ry > 32767 ? 32767 : ry < -32767 ? -32767 : ry;
+    dm_input_set(g_btn | g_kbm_btn, lx, ly, rx, ry);
+}
+static void mouse_look(double dx, double dy) {   // a captured mouse's movement in points: the right stick, until 60 ms without movement
+    static double sens = -1; if (sens < 0) { const char *e = getenv("DM_MOUSE_SENS"); double v = e ? atof(e) : 1.0; sens = v >= 0.1 && v <= 10 ? v : 1.0; }
+    double x = dx * 6000.0 * sens, y = -dy * 6000.0 * sens;   // AppKit's y grows downwards in deltaY; the stick's up is positive
+    g_mouse_rx = (int32_t)fmax(fmin(x, 32767), -32767); g_mouse_ry = (int32_t)fmax(fmin(y, 32767), -32767);
+    push();
+    [g_mouse_rest invalidate];
+    g_mouse_rest = [NSTimer timerWithTimeInterval:0.06 repeats:NO block:^(NSTimer *t) { (void)t; g_mouse_rx = g_mouse_ry = 0; push(); }];
+    [NSRunLoop.mainRunLoop addTimer:g_mouse_rest forMode:NSRunLoopCommonModes];
+}
+static void kbm_hold(uint64_t m, int down) { g_kbm_btn = down ? (g_kbm_btn | m) : (g_kbm_btn & ~m); push(); }
+static int kbm_key_bit(unsigned short code) {
+    switch (code) {
+        case 36: case 76: case 14: case 3: case 38: return 0;   // Return, keypad Enter, E, F, J → A (talk, open, roll, confirm)
+        case 51: case 117: case 40: return 1;                  // Delete, forward Delete, K → B (back)
+        case 49: case 15: case 32: return 2;                   // Space, R, U → X
+        case 34: case 12: return 3;                            // I, Q → Y (the sword; also the left click)
+        case 5: return 5;                                      // G → right stick press
+        case 37: case 7: return 6;                             // L, X → L
+        case 6: return 8;                                      // Z → ZL (Z-targeting; also the middle click)
+        case 8: case 9: return 9;                              // C, V → ZR
+        case 48: case 53: return 10;                           // Tab, Escape → + (pause)
+        case 46: return 11;                                    // M → − (map)
+        case 123: case 18: return 12; case 126: case 19: return 13; case 124: case 20: return 14; case 125: case 21: return 15;   // arrows, 1-4 → D-pad
+    }
+    return -1;
 }
 static int key_bit(unsigned short code) {
     switch (code) {
@@ -171,6 +215,12 @@ static void on_key(NSEvent *e, int down) {
         return;
     }
     switch (c) { case 13: g_w = down; break; case 0: g_a = down; break; case 1: g_s = down; break; case 2: g_d = down; break; }
+    if (kbm_on()) {   // keyboard and mouse mode: its own layout, no right stick on Shift + arrows (the mouse is the camera), Escape lets the mouse go
+        if (down && c == 53) mouse_capture(0);
+        int b = kbm_key_bit(c); uint64_t m = b >= 0 ? 1ull << b : 0;
+        g_btn = down ? (g_btn | m) : (g_btn & ~m);
+        push(); return;
+    }
     // An arrow key pressed with Shift held is the right stick until it is released; without Shift, the D-pad. The keyboard had no right stick: a 3D game's camera
     // could be turned only with a controller (Donkey Kong Bananza)
     int *rs = c == 123 ? &g_rl : c == 126 ? &g_ru : c == 124 ? &g_rr : c == 125 ? &g_rd : NULL;
@@ -337,6 +387,7 @@ static void input_release(void) {
     g_input_on = 0;
     dm_motion_pro_active(0); hidpad_motion_clear();
     dm_switch2_active(0);
+    mouse_capture(0); g_kbm_btn = 0; g_mouse_rx = g_mouse_ry = 0;   // keyboard and mouse mode: the pointer back, nothing held
     g_btn = 0; g_w = g_a = g_s = g_d = 0; g_rl = g_ru = g_rr = g_rd = 0; push();
     if (g_mouse_down) { g_mouse_down = 0; dm_touch_set(NULL, 0); }
     pads_release();
@@ -615,8 +666,18 @@ static _Atomic double g_picture_aspect = 16.0 / 9.0;
 void front_picture_shape(int w, int h) { if (w > 0 && h > 0) g_picture_aspect = (double)w / h; }
 @interface DmGameView : NSView @end
 @implementation DmGameView
-- (void)mouseDown:(NSEvent *)e { [self mouseDragged:e]; }
+// Keyboard and mouse mode (kbm_on): the first click in the picture captures the mouse for the camera (and presses nothing); then left Y, right R, middle ZL. The movement comes through the
+// window's mouse-moved monitor (front_run), so it turns the camera with a button held too
+- (void)mouseDown:(NSEvent *)e {
+    if (kbm_on()) { if (!g_input_on) return; if (!g_mouse_captured) { mouse_capture(1); return; } kbm_hold(DM_BTN_Y, 1); return; }
+    [self mouseDragged:e];
+}
+- (void)rightMouseDown:(NSEvent *)e { if (!kbm_on()) { [super rightMouseDown:e]; return; } if (g_input_on) { if (!g_mouse_captured) mouse_capture(1); kbm_hold(DM_BTN_R, 1); } }
+- (void)rightMouseUp:(NSEvent *)e { if (!kbm_on()) { [super rightMouseUp:e]; return; } kbm_hold(DM_BTN_R, 0); }
+- (void)otherMouseDown:(NSEvent *)e { if (!kbm_on() || e.buttonNumber != 2) { [super otherMouseDown:e]; return; } if (g_input_on) { if (!g_mouse_captured) mouse_capture(1); kbm_hold(DM_BTN_ZL, 1); } }
+- (void)otherMouseUp:(NSEvent *)e { if (!kbm_on() || e.buttonNumber != 2) { [super otherMouseUp:e]; return; } kbm_hold(DM_BTN_ZL, 0); }
 - (void)mouseDragged:(NSEvent *)e {
+    if (kbm_on()) return;   // the camera, through the mouse-moved monitor
     if (!g_input_on) return;
     NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize b = self.bounds.size;
     double w = b.width, h = b.height;
@@ -626,7 +687,7 @@ void front_picture_shape(int w, int h) { if (w > 0 && h > 0) g_picture_aspect = 
     dm_touch t = {0, (float)fmin(fmax((p.x - x0) / w, 0), 0.999), (float)fmin(fmax(1 - (p.y - y0) / h, 0), 0.999)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
     dm_touch_set(&t, 1); g_mouse_down = 1;
 }
-- (void)mouseUp:(NSEvent *)e { (void)e; if (g_mouse_down) { g_mouse_down = 0; dm_touch_set(NULL, 0); } }
+- (void)mouseUp:(NSEvent *)e { (void)e; if (kbm_on()) { kbm_hold(DM_BTN_Y, 0); return; } if (g_mouse_down) { g_mouse_down = 0; dm_touch_set(NULL, 0); } }
 // Window > Metal HUD (cmd-shift-H): Apple's performance HUD shown or hidden on this layer alone, whatever MTL_HUD_ENABLED says. developerHUDProperties with
 // mode=default shows it (and enables it when the environment did not), an empty dictionary hides it; nil would hand the choice back to the environment
 - (void)toggleMetalHUD:(id)sender {
@@ -1602,6 +1663,17 @@ void front_run(void (*guest)(void)) {
                 if (conn) hq_log_setting(); }];
         dm_haptics_apple_init();
         pads_start();
+        if (kbm_on()) {   // keyboard and mouse mode: Shift is R (the shield), and a captured mouse's movement turns the camera, a button held or not
+            win.acceptsMouseMovedEvents = YES;
+            [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskFlagsChanged handler:^NSEvent *(NSEvent *e) {
+                if (e.window == win && g_input_on) { int sh = (e.modifierFlags & NSEventModifierFlagShift) != 0; if (sh != !!(g_kbm_btn & DM_BTN_R)) kbm_hold(DM_BTN_R, sh); }
+                return e;
+            }];
+            [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged handler:^NSEvent *(NSEvent *e) {
+                if (e.window == win && g_input_on && g_mouse_captured) mouse_look(e.deltaX, e.deltaY);
+                return e;
+            }];
+        }
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
             if (e.type == NSEventTypeKeyDown && (e.modifierFlags & NSEventModifierFlagCommand)) return e;   // ⌘ shortcuts go to the menu; a key released while ⌘ is held still reaches the game, or it would stay pressed
