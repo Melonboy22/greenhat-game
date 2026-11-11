@@ -4812,13 +4812,13 @@ static void rt_lossy(MTLTextureDescriptor *d) {
     d.allowGPUOptimizedContents = YES; d.compressionType = MTLTextureCompressionTypeLossy;
     g_rtl_n++; g_rtl_bytes += (uint64_t)d.width * d.height * mtl_pf_bytes(f);
 }
-// The game copies from this texture or reads it back: if it is soft (tex_soft), it goes whole from here on, uploaded again now with its finest level, which its storage still holds.
+// The game copies from this texture, copies into it (a texture streamed in by copies: a skipped level-0 copy left Kakariko's ground showing what was there before) or reads it back: if it is soft (tex_soft), it goes whole from here on, uploaded again now with its finest level, which its storage still holds.
 // The soft texture becomes the spare (in-flight draws may still read it)
 static void soft_harden(const tex_t *t) {
     if (!t || !tex_soft(t) || (t->pool && t->pool->magic != MAGIC('P', 'O', 'O', 'L'))) return;
     id have = tex_get(t->serial); NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;
     uint64_t k = (uint64_t)(uintptr_t)t->mem; pthread_mutex_lock(&g_smu); nvn_hm_put(&g_soft_hard, &k, (void *)1); pthread_mutex_unlock(&g_smu);
-    static uint64_t nh; if (nh++ < 4 || !(nh & (nh - 1))) MLOG("soft textures: kept whole, the game copies from it: ser=%llu %ux%ux%u format %#x (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)nh);
+    static uint64_t nh; if (nh++ < 4 || !(nh & (nh - 1))) MLOG("soft textures: kept whole, the game copies from or into it or reads it back: ser=%llu %ux%ux%u format %#x (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)nh);
     if (!pk || pk->sparse) return;
     uint64_t st; id<MTLTexture> nt = pkg_upload(t, &st, nil, pk->tex.usage);
     if (!nt) return;
@@ -15412,6 +15412,7 @@ static void mirror_rb_land(void *p) {   // the submission's completion handler
 }
 static void copy_b2t(const p_copy_b2t *c, uint32_t size) {
     if (c->tex) zskip_del(c->tex->serial);
+    soft_harden(c->tex);   // the game copies into it: whole from here on, so the copy lands at the game's own level (tex_soft)
     id<MTLTexture> t = tex_mtl(c->tex); sparse_gpu_wrote(c->tex);
     if (!t) { PD("C ser=%llu (no host texture)", c->tex->serial); return; }
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
@@ -15676,6 +15677,7 @@ static void copy_t2t(const p_copy_t2t *c) {
     if (!tex_soft_level_mt(c->src, s, &sl)) { RED_ONCE(165, "texture copy with a left-out level of a soft texture: skipped (first case src ser=%llu dst ser=%llu)", (unsigned long long)c->src->serial, (unsigned long long)c->dst->serial); return; }
     if (!tex_level_ok(s, sl, "texture copy source")) return;
     if (bc_alias_copy(c, s, sl, sz0, dl, dz0)) return;   // the destination aliases a compressed texture: the bytes go there, and the alias's own texture is not made (see bc_alias_copy)
+    soft_harden(c->dst);   // the game copies into it: whole from here on (tex_soft)
     id<MTLTexture> d = tex_mtl(c->dst); sparse_gpu_wrote(c->dst);
     if (d && !tex_soft_level_mt(c->dst, d, &dl)) { RED_ONCE(165, "texture copy with a left-out level of a soft texture: skipped (first case src ser=%llu dst ser=%llu)", (unsigned long long)c->src->serial, (unsigned long long)c->dst->serial); return; }
     if (!d || !tex_level_ok(d, dl, "texture copy destination")) return;

@@ -72,6 +72,28 @@ int main(void) { @autoreleasepool {
     CHECK("its host levels hold the game's levels 0 to 3", whole && levels_match(whole, (const uint8_t *const *)expected, 0));
     lv = 2; CHECK("level numbers are the game's again", tex_soft_level_mt(&t, whole, &lv) && lv == 2);
 
+    // The game copies into a soft texture (a texture streamed in by buffer→texture copies): copy_b2t makes it whole first, and the copy lands in its level 0. Before, a copy into
+    // level 0 was skipped and the texture kept what it had (Kakariko's ground showed another material)
+    void *mem2 = NULL; if (posix_memalign(&mem2, getpagesize(), poolsize)) abort(); memset(mem2, 0, poolsize);
+    pool_t pool2 = {.magic = MAGIC('P', 'O', 'O', 'L'), .mem = mem2, .size = poolsize, .flags = NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+    mtl_pool_add(mem2, poolsize); nvn_dirty_add_range(mem2, poolsize);
+    tex_t s = t; s.serial = 99701; s.pool = &pool2; s.mem = mem2;
+    dm_guest_write_prepare(mem2, poolsize);
+    for (unsigned l = 0; l < LEVELS; l++) { unsigned w = MAX((unsigned)W >> l, 1u); CHECK("reference swizzle succeeds (second texture)", !nvn_swizzle(&s.d, l, 0, expected[l], bc1_pitch(w), s.mem)); }
+    CHECK("the second texture is soft before the copy", tex_soft(&s));
+    mtl_sub_begin(); id<MTLTexture> before = tex_mtl(&s); finish();
+    CHECK("its host texture is half size before the copy", before && before.width == W / 2);
+    size_t n0 = bc1_pitch(W) * bc1_rows(H); void *src = NULL; if (posix_memalign(&src, getpagesize(), (n0 + getpagesize() - 1) & ~(size_t)(getpagesize() - 1))) abort();
+    uint8_t *streamed = src; for (size_t i = 0; i < n0; i++) streamed[i] = (uint8_t)(i * 7u + 13u);   // what the game streams into level 0, unlike what the storage held
+    mtl_pool_add(src, (n0 + getpagesize() - 1) & ~(size_t)(getpagesize() - 1));
+    p_copy_b2t c = {.src = (uint64_t)(uintptr_t)src, .tex = &s, .r = {0, 0, 0, W, H, 1}};
+    mtl_sub_begin(); copy_b2t(&c, 0); finish();
+    id<MTLTexture> after = tex_mtl(&s);
+    CHECK("a copy into level 0 makes the texture whole", !tex_soft(&s) && after && after.width == W && after.mipmapLevelCount == LEVELS);
+    const uint8_t *exp2[LEVELS] = {streamed, expected[1], expected[2], expected[3]};
+    CHECK("level 0 holds the copied bytes, the other levels the storage's", after && levels_match(after, exp2, 0));
+    mtl_tex_release(&s); mtl_drain(); mtl_alias_drop_pool(&pool2); nvn_dirty_remove_range(mem2); mtl_pool_del(mem2); mtl_pool_del(src); mtl_drain(); free(mem2); free(src);
+
     mtl_tex_release(&t); mtl_drain(); mtl_alias_drop_pool(&pool); nvn_dirty_remove_range(mem); mtl_pool_del(mem); mtl_drain(); free(mem);
     for (unsigned l = 0; l < LEVELS; l++) free(expected[l]);
     printf("t_tex_soft: %d checks, %d failed\n", checks, failed);
