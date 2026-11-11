@@ -109,8 +109,17 @@ static void t_npads(void) {
     int32_t info[2]; int8_t arg[8] = {1, 4};
     CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 2 && info[1] == 0, "the controller applet reports two players, player 1 selected");
     CHECK(applet_opens == 1 && applet_depth == 0 && applet_closes_at_depth0 == 1, "the controller applet opens and closes once around its answer (focus 2, then 1)");
-    arg[1] = 1; h_hid_ShowCtrl(info, arg);
+    arg[1] = 1; int sig = g_signals; h_hid_ShowCtrl(info, arg);
     CHECK(info[0] == 1, "the applet's count is capped at the game's maximum");
+    // As on a Switch, the applet leaves the game's maximum connected: player 2's controller is no longer reported, and it plays player 1 (g_applet_cap)
+    CHECK(h_hid_GetStyle(&(uint32_t){1}) == 0 && dm_players_reported() == 1 && g_signals > sig, "a one-player applet with two controllers: No2 disconnected, its style event signalled");
+    dm_pad_set_player(1, DM_BTN_B, 0, 0, 0, 0); dm_pad_set(0, 0, 0, 0, 0);
+    CHECK(buttons_of(0, STYLE_FULLKEY) == DM_BTN_B, "the extra controller plays player 1");
+    dm_pad_set_player(1, DM_BTN_B, 300, 0, 0, 0); dm_pad_set(DM_BTN_Y, 0, 0, 0, 0);   // the inputs the checks below expect
+    sig = g_signals; h_hid_ShowCtrl(info, arg);
+    CHECK(info[0] == 1 && dm_players_reported() == 1 && g_signals == sig, "the same applet again: one player, no new style change");
+    arg[1] = 4; sig = g_signals;
+    CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 2 && h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY && g_signals > sig, "an applet that takes more players: player 2 is reported again");
     arg[0] = 3; arg[1] = 4;
     CHECK(h_hid_ShowCtrl(info, arg) == RES_CTRL_CANCELED && info[0] == 2, "fewer players than the game's minimum: canceled (2202-3101), as the player closing the applet");
     CHECK(h_hid_ShowCtrl0(arg) == RES_CTRL_CANCELED, "the overload without a result: canceled too");
@@ -132,7 +141,7 @@ static void t_npads(void) {
         g_prompt_answer = -1;
     }
     CHECK(h_hid_Strap() == RES_OK && h_hid_StrapArg(arg) == RES_OK, "both strap guide overloads answer as the player closing the guide");
-    CHECK(applet_opens == 12 && applet_depth == 0, "every answer opened and closed its applet");
+    CHECK(applet_opens == 14 && applet_depth == 0, "every answer opened and closed its applet");
     arg[0] = 1;
     CHECK(six_connected(0x0100 | 0) && !six_connected(0x0200 | 0), "player 2 has a six-axis sensor, No3 none");
 

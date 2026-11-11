@@ -291,8 +291,12 @@ uint32_t dm_player_npad(int p) { return p <= 0 ? connected_id() : (uint32_t)p; }
 // The players with a controller (bit p = player p + 1, from the front end's dm_pad_players; player 1 always) and the npads the game supports (bit id for No1..No8, bit 8
 // Handheld, bit 9 Other: all of them until SetSupportedNpadIdType, as the hid service starts)
 static _Atomic uint32_t g_players = 1, g_ids_supported = 0x3ff;
+// The players the last controller applet left connected (ctrl_support; 0: no limit). On a Switch the applet, asked for at most n players with more controllers connected, closes
+// with n of them and the system disconnects the rest. Reported as before, the extra controllers stayed connected and Ocarina of Time (one player, a Keychron keyboard receiver
+// read as a second HID pad) opened the applet again every few frames, 13,397 times in 12,000 frames. The limit is worked out again at each applet call
+static _Atomic int g_applet_cap;
 static uint32_t id_bit(uint32_t id) { return id < DM_PLAYERS ? 1u << id : id == NPAD_HANDHELD ? 1u << 8 : id == 0x10 ? 1u << 9 : 0; }
-static int reported(int p) { return p == 0 || (atomic_load(&g_players) >> p & 1 && atomic_load(&g_ids_supported) & id_bit((uint32_t)p)); }
+static int reported(int p) { int cap = atomic_load(&g_applet_cap); return p == 0 || ((!cap || p < cap) && atomic_load(&g_players) >> p & 1 && atomic_load(&g_ids_supported) & id_bit((uint32_t)p)); }
 // Players with a controller whose npad the game does not support. A one-player game (no npad past No1 supported) gets them as player 1, so any controller plays it; in a game for
 // fewer players than are connected (a fifth controller in a four-player game) they are not used, as on the Switch, where the system does not connect them
 static uint32_t unsupported_players(void) {
@@ -300,7 +304,7 @@ static uint32_t unsupported_players(void) {
     return m;
 }
 static int one_player(void) { return !(atomic_load(&g_ids_supported) & ((1u << DM_PLAYERS) - 2)); }
-static uint32_t merged_players(void) { return one_player() ? unsupported_players() : 0; }
+static uint32_t merged_players(void) { return one_player() || atomic_load(&g_applet_cap) == 1 ? unsupported_players() : 0; }   // a one-player applet's extra controllers play player 1
 static int player_of(uint32_t id) {   // the reported player on npad id; -1 when none
     if (id == connected_id()) return 0;
     return id > 0 && id < DM_PLAYERS && reported((int)id) ? (int)id : -1;
@@ -381,7 +385,7 @@ void dm_joy_set(int p, int side, uint64_t buttons, int32_t sx, int32_t sy) {
     atomic_store(&g_joy_axes[p][side], pack(sx, sy, 0, 0));
 }
 static void note_merged(void) {   // logs the players whose npad the game does not support, when that changes
-    static _Atomic uint32_t last; uint32_t m = unsupported_players(), one = (uint32_t)one_player();
+    static _Atomic uint32_t last; uint32_t m = unsupported_players(), one = (uint32_t)(one_player() || atomic_load(&g_applet_cap) == 1);
     if (atomic_exchange(&last, m | one << 31) == (m | one << 31)) return;
     for (int p = 1; p < DM_PLAYERS; p++) if (m >> p & 1) {
         if (one) LOG("hid: player %d's controller feeds player 1: the game supports one player (no npad %d)", p + 1, p);
@@ -652,6 +656,7 @@ int dm_players_reported(void) {   // a pair of Joy-Cons split into two npads is 
     return n;
 }
 static Result ctrl_support(int32_t *info, const int8_t *arg) {
+    int cap_was = atomic_exchange(&g_applet_cap, 0);   // every connected controller counts again (g_applet_cap); the game waits in the applet meanwhile
     int count = dm_players_reported(), canceled = 0;
     // Too few players, but a pair of Joy-Cons is two when each is held sideways (single assignment): the applet splits the pair, as the player does on a Switch, to reach the minimum
     for (int p = 0; arg && count < arg[0] && p < DM_PLAYERS; p++)
@@ -669,7 +674,14 @@ static Result ctrl_support(int32_t *info, const int8_t *arg) {
         }
         canceled = r <= 0 || arg[0] > count;
     } else if (arg) LOG("hid controller applet: %d to %d players wanted, %d connected", arg[0], arg[1], count);
-    if (arg && arg[1] > 0 && count > arg[1]) count = arg[1];
+    int cap = !canceled && arg && arg[1] > 0 && count > arg[1] ? arg[1] : 0;   // more controllers than the game takes: the applet leaves arg[1] of them, as on a Switch
+    if (cap) count = cap;
+    atomic_store(&g_applet_cap, cap);
+    if (cap != cap_was) {
+        static int nl; if (nl++ < 8) LOG("hid controller applet: %s", cap ? "more controllers than the game takes; the first ones stay connected, the rest play player 1" : "every connected controller is a player again");
+        for (uint32_t i = 0; i < DM_PLAYERS; i++) style_changed(i);
+        note_merged();
+    }
     if (info) { info[0] = count; info[1] = (int32_t)connected_id(); }
     return canceled ? RES_CTRL_CANCELED : RES_OK;
 }
