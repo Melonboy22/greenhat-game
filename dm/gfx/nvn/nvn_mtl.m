@@ -2968,7 +2968,9 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
 enum { GHOST_TRIM_IDLE = 600 };   // frames (10 s at 60 fps) since a packaged texture was last resolved (NvPkg used)
 static int ghost_restorable(id o, uint64_t now);   // after NvPkg's interface
 static unsigned ghost_trim(int force) {
-    static long floor_ = -1; if (floor_ < 0) { const char *e = getenv("DM_NVN_GHOST_TRIM_MIN"); floor_ = e && *e ? atol(e) : 0; if (floor_ < 0) floor_ = 0; }
+    // On by default again (2048) with the rule above: off, the ring alone held 1.5 GB of an area's large textures 2 minutes after entering it on a 16 GB M5, the watchdog's relief
+    // at 12 GB had nothing to let go and the game paged at 10 fps (oot-plus d461bc2c). DM_NVN_GHOST_TRIM_MIN=0 turns it off
+    static long floor_ = -1; if (floor_ < 0) { const char *e = getenv("DM_NVN_GHOST_TRIM_MIN"); floor_ = e && *e ? atol(e) : 2048; if (floor_ < 0) floor_ = 0; }
     if (!floor_ || !force) return 0;
     unsigned cap = ghost_cap(), n = 0; uint64_t now = atomic_load(&g_cur_frame);
     pthread_mutex_lock(&g_smu);

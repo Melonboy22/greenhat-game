@@ -1601,12 +1601,13 @@ NVN(nvnQueueAcquireTexture, NVNqueueAcquireTextureResult, NVNqueue *q, NVNwindow
 // only while the system is short of memory too (mtl_mem_sys_low: the guard's system side at its eviction level) after three checks over the cap in a row, or at once past the cap and 1.5 GB,
 // which only a runaway reaches (the cap's purpose: host memory that grows without end took machines into a kernel panic). Before, it exited at the first check over the cap with no word:
 // Ocarina of Time on a 16 GB M5 at 12,322 MB of a 12 GB cap, with a quarter of memory free. The stop says why in the front end's alert (front_memory_stop) and exits with status 86.
-// Below the cap a soft level (DM_MEM_SOFT_GB; default the cap less 1 GB, 12 GB on a 16 GB Mac; 0 = none) asks for the same relief, never a stop: kern.memorystatus_level, which the
-// GPU memory guard's own eviction follows, said 18-25 % available while the game paged at 9-16 fps with a 12.7-13 GB footprint, so the guard let go of nothing
+// Below the cap a soft level (DM_MEM_SOFT_GB; default the cap less 2 GB, 11 GB on a 16 GB Mac; 0 = none) asks for the same relief, never a stop: kern.memorystatus_level, which the
+// GPU memory guard's own eviction follows, said 18-25 % available while the game paged at 9-16 fps with a 12.7-13 GB footprint, so the guard let go of nothing. At 1 GB under the cap
+// (12 GB) the relief came too late: entering an area on a 16 GB M5 the game dropped 466 frames a minute at 11.9 GB and 1,323 at 12.5 GB, swap 0.5 -> 3.6 GB in four minutes
 void mtl_mem_relief(void); int mtl_mem_sys_low(void);
 static long long mem_soft_mb(long long cap) {
     static long long soft = -2; if (soft == -2) { const char *e = getenv("DM_MEM_SOFT_GB"); soft = e && *e ? (long long)(strtod(e, NULL) * 1024) : -1; if (soft < -1) soft = -1; }
-    return soft >= 0 ? soft : cap > 1024 ? cap - 1024 : 0;
+    return soft >= 0 ? soft : cap > 2048 ? cap - 2048 : 0;
 }
 __attribute__((weak)) void front_memory_stop(unsigned long long used_mb, unsigned long long cap_mb) { (void)used_mb; (void)cap_mb; _exit(86); }   // no window, iOS, the tests: as before
 void dm_mem_watchdog(unsigned long long mb, long long cap);   // the tests call it (t_mem_watchdog)

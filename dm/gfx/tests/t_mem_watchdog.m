@@ -32,11 +32,11 @@ int main(int argc, char **argv) { @autoreleasepool {
         dm_mem_watchdog(cap + 100, cap); CHECK("over the cap the relief as before", !stops && relief());
     } else {
         sys(0);
-        dm_mem_watchdog(cap - 2000, cap); CHECK("under the soft level (the cap less 1 GB): nothing", !stops && !relief());
+        dm_mem_watchdog(cap - 3000, cap); CHECK("under the soft level (the cap less 2 GB): nothing", !stops && !relief());
         dm_mem_watchdog(cap - 100, cap); CHECK("between the soft level and the cap: a relief, no stop", !stops && relief());
         for (int i = 0; i < 10; i++) dm_mem_watchdog(cap + 400, cap);
         CHECK("over the cap ten checks in a row with the system not short: reliefs, no stop", !stops && relief());
-        dm_mem_watchdog(cap - 2000, cap); CHECK("back under the soft level: nothing asked", !stops && !relief());
+        dm_mem_watchdog(cap - 3000, cap); CHECK("back under the soft level: nothing asked", !stops && !relief());
         sys(1); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap - 10, cap); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap + 400, cap);
         CHECK("over, short, but never three checks in a row: no stop", !stops);
         dm_mem_watchdog(cap + 400, 0); CHECK("a cap of 0 turns it off", !stops);
