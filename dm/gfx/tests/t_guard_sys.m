@@ -25,6 +25,18 @@ int main(void) { @autoreleasepool {
     uint64_t avail = atomic_load(&g_sys_avail);
     atomic_store(&g_sys_margin, avail / 2 + (64ull << 20)); guard_sys_tick();   // between the margin and twice it, unless the system moved by more than 64 MB in between
     CHECK(atomic_load(&g_sys_lv) == GUARD_EVICT, "available memory between the margin and twice it: evict");
+    // Memory pressure events (guard_pressure): a warning raises the margin by 512 MB, up to 4 GB; back to normal returns it to the base
+    atomic_store(&g_sys_margin_base, 1024ull << 20); atomic_store(&g_sys_margin, 1024ull << 20);
+    guard_pressure(DISPATCH_MEMORYPRESSURE_WARN); guard_pressure(DISPATCH_MEMORYPRESSURE_WARN); guard_pressure(DISPATCH_MEMORYPRESSURE_CRITICAL);
+    CHECK(atomic_load(&g_sys_margin) == (2560ull << 20), "three pressure events raise the margin to 2,560 MB");
+    for (int i = 0; i < 8; i++) guard_pressure(DISPATCH_MEMORYPRESSURE_WARN);
+    CHECK(atomic_load(&g_sys_margin) == (4096ull << 20), "the raised margin stops at 4 GB");
+    guard_pressure(DISPATCH_MEMORYPRESSURE_NORMAL);
+    CHECK(atomic_load(&g_sys_margin) == (1024ull << 20), "pressure back to normal: the margin returns to its base");
+    guard_pressure(DISPATCH_MEMORYPRESSURE_WARN);
+    CHECK(atomic_load(&g_sys_margin) == (1536ull << 20), "a later warning raises it again from the base");
+    atomic_store(&g_sys_margin_base, 0); atomic_store(&g_sys_margin, 0); guard_pressure(DISPATCH_MEMORYPRESSURE_WARN);
+    CHECK(atomic_load(&g_sys_margin) == 0, "with the system side off (margin 0) pressure events change nothing");
     atomic_store(&g_sys_margin, 0); atomic_store(&g_sys_lv, GUARD_OK); guard_sys_tick();
     CHECK(atomic_load(&g_sys_lv) == GUARD_OK, "a margin of 0 turns the system side off");
     printf("t_guard_sys: %d checks, %d failed\n", checks, failed); return failed != 0;

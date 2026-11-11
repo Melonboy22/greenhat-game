@@ -443,9 +443,9 @@ static _Atomic uint64_t g_guard_set;   // the residency set's size at the last c
 // working set. Ocarina of Time with every pool resident (DM_NVN_GMEM_ALL=1, M2 Pro, 12,124 MB working set): a kernel panic at 10,463 MB wired with 48 MB free (3 GB compressed),
 // under this guard's 95 % stop. So the 100 ms timer also reads how much memory the system can still give (kern.memorystatus_level: the percentage of memory available, free plus
 // reclaimable) and raises the level when that falls below the margin (stop) or twice the margin (evict). The margin starts at DM_NVN_SYS_MARGIN_MB (default 1024; 0 turns this
-// side off) and grows by 512 MB, up to 4 GB, at each memory-pressure warning the system sends. The working-set side counts as before (guard_used)
+// side off) and grows by 512 MB, up to 4 GB, at each memory-pressure warning the system sends, and goes back to where it started when the system says pressure is back to normal (guard_pressure). The working-set side counts as before (guard_used)
 static _Atomic int g_sys_lv;   // GUARD_OK / GUARD_EVICT / GUARD_STOP from the system's available memory, set by guard_tick
-static _Atomic uint64_t g_sys_avail, g_sys_margin;   // bytes the system can still give at the last tick, and the margin
+static _Atomic uint64_t g_sys_avail, g_sys_margin, g_sys_margin_base;   // bytes the system can still give at the last tick, the margin, and the margin it starts from (DM_NVN_SYS_MARGIN_MB)
 static int guard_level(uint64_t used) {
     int lv = !g_guard.stop ? GUARD_OK : used >= g_guard.wall ? GUARD_WALL : used >= g_guard.stop ? GUARD_STOP : used >= g_guard.evict ? GUARD_EVICT : GUARD_OK;
     int sys = atomic_load_explicit(&g_sys_lv, memory_order_relaxed);
@@ -701,6 +701,20 @@ static void guard_stop(uint64_t used) {
     front_gpu_memory_stop(used >> 20, g_guard.wall >> 20);
 }
 // The submit thread decides while it comes round (guard_act). Past the working set, or a second over the stop level, it does not
+// The system's memory pressure events (a dispatch source, guard_init): a warning or a critical event raises the margin by 512 MB, up to 4 GB, as kern.memorystatus_level then
+// overstates what the system can give; the event that pressure is back to normal takes it back to where it started. Without that the margin only grew: on a 16 GB M5, three
+// warnings spread over half an hour of Ocarina of Time took it to 2,560 MB, the guard flushed every 30 frames with a quarter of memory free, and the earlier run that reached
+// that margin was ended with 2,457 MB still to give. A warning that comes again raises it again from the base
+static void guard_pressure(unsigned long flags) {
+    uint64_t base = atomic_load(&g_sys_margin_base), cur = atomic_load(&g_sys_margin), nm;
+    if (!base) return;
+    if (flags & (DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL)) { nm = cur + (512ull << 20); if (nm > (4096ull << 20)) nm = MAX(4096ull << 20, base); }
+    else if (flags & DISPATCH_MEMORYPRESSURE_NORMAL) nm = base;
+    else return;
+    atomic_store(&g_sys_margin, nm);
+    if (nm != cur) MLOG("GPU memory guard: the system reports memory pressure %s (%lu): the margin is now %llu MB", flags & DISPATCH_MEMORYPRESSURE_NORMAL && !(flags & (DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL)) ? "back to normal" : "raised", flags, (unsigned long long)(nm >> 20));
+    guard_sys_tick();
+}
 static void guard_tick(void) {
     static unsigned over;
     guard_sys_tick();
@@ -721,11 +735,10 @@ static void guard_init(void) {
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), 100 * NSEC_PER_MSEC, 20 * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(timer, ^{ guard_tick(); });
     dispatch_resume(timer);
-    { const char *m = getenv("DM_NVN_SYS_MARGIN_MB"); uint64_t mb = m ? strtoull(m, NULL, 0) : 1024; atomic_store(&g_sys_margin, mb << 20);
+    { const char *m = getenv("DM_NVN_SYS_MARGIN_MB"); uint64_t mb = m ? strtoull(m, NULL, 0) : 1024; atomic_store(&g_sys_margin, mb << 20); atomic_store(&g_sys_margin_base, mb << 20);
       static dispatch_source_t press;
-      if (mb) { press = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0, DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
-          dispatch_source_set_event_handler(press, ^{ uint64_t cur = atomic_load(&g_sys_margin), nm = cur + (512ull << 20); if (nm > (4096ull << 20)) nm = 4096ull << 20; atomic_store(&g_sys_margin, nm);
-              MLOG("GPU memory guard: the system reports memory pressure (%lu): the margin is now %llu MB", (unsigned long)dispatch_source_get_data(press), (unsigned long long)(nm >> 20)); guard_sys_tick(); });
+      if (mb) { press = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0, DISPATCH_MEMORYPRESSURE_NORMAL | DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+          dispatch_source_set_event_handler(press, ^{ guard_pressure(dispatch_source_get_data(press)); });
           dispatch_resume(press); }
       MLOG("GPU memory guard: also stops when the system has less than %llu MB left to give (DM_NVN_SYS_MARGIN_MB; evicts below twice that)", (unsigned long long)mb); }
     MLOG("GPU memory guard: lets go of what it can from %llu MB, stops the game at %llu MB (Metal's working set %llu MB)", (unsigned long long)(g_guard.evict >> 20), (unsigned long long)(g_guard.stop >> 20), (unsigned long long)(ws >> 20));
