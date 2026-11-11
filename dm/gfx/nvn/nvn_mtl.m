@@ -2953,8 +2953,9 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
     count_add(m == &g_by_serial ? &g_by_serial_held : &g_ghost_held, (__bridge void *)o, 1);
     pthread_mutex_unlock(&g_smu);
 }
-// Under memory pressure the ring of finalized serials gives back entries, oldest first, down to DM_NVN_GHOST_TRIM_MIN entries (default 2048, about 5 s of Ocarina of Time's 400
-// finalizes a second; 0 turns this off): only at the guard's stop level (force 1, straight to that floor) and for the memory watchdog over its cap (force 2, an eighth of it), not at the
+// Off by default (DM_NVN_GHOST_TRIM_MIN unset or 0): in the 300-frame windows after a trim of more than 500 serials, first uploads had a median of 276 against 26 in the others (n=23
+// and 135, a 16 GB M5): the ring holds what retired IDs still resolve to, and was 100-300 MB most of the time. With DM_NVN_GHOST_TRIM_MIN=<entries> (2048: about 5 s of Ocarina of
+// Time's 400 finalizes a second), under memory pressure the ring of finalized serials gives back entries, oldest first, down to that many: only at the guard's stop level (force 1, straight to that floor) and for the memory watchdog over its cap (force 2, an eighth of it), not at the
 // eviction level (force 0), and only entries that can be made again as they were and were not used for GHOST_TRIM_IDLE frames (ghost_restorable: a packaged texture, uploaded from
 // storage the game wrote). At the eviction level it trimmed 48 times in 24 minutes on a 16 GB M5 and each trim was followed by a burst of first uploads (6,808 trimmed, 1,513 made again
 // in the next 300 frames): retired IDs the shaders still read resolve through the ring for minutes, and a GPU-written texture made again reads cleared (Kakariko Village's grass went
@@ -2967,7 +2968,7 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
 enum { GHOST_TRIM_IDLE = 600 };   // frames (10 s at 60 fps) since a packaged texture was last resolved (NvPkg used)
 static int ghost_restorable(id o, uint64_t now);   // after NvPkg's interface
 static unsigned ghost_trim(int force) {
-    static long floor_ = -1; if (floor_ < 0) { const char *e = getenv("DM_NVN_GHOST_TRIM_MIN"); floor_ = e && *e ? atol(e) : 2048; if (floor_ < 0) floor_ = 0; }
+    static long floor_ = -1; if (floor_ < 0) { const char *e = getenv("DM_NVN_GHOST_TRIM_MIN"); floor_ = e && *e ? atol(e) : 0; if (floor_ < 0) floor_ = 0; }
     if (!floor_ || !force) return 0;
     unsigned cap = ghost_cap(), n = 0; uint64_t now = atomic_load(&g_cur_frame);
     pthread_mutex_lock(&g_smu);

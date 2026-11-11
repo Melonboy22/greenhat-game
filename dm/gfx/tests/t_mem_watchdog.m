@@ -26,12 +26,17 @@ int main(int argc, char **argv) { @autoreleasepool {
     } else if (!strcmp(mode, "runaway")) {
         sys(0);
         dm_mem_watchdog(cap + 1600, cap); CHECK("past the cap by more than 1.5 GB: the stop at once, the system not short", stops == 1 && stop_mb == (unsigned long long)cap + 1600);
+    } else if (!strcmp(mode, "nosoft")) {
+        sys(0); setenv("DM_MEM_SOFT_GB", "0", 1);
+        dm_mem_watchdog(cap - 100, cap); CHECK("DM_MEM_SOFT_GB=0: nothing under the cap", !stops && !relief());
+        dm_mem_watchdog(cap + 100, cap); CHECK("over the cap the relief as before", !stops && relief());
     } else {
         sys(0);
-        dm_mem_watchdog(cap - 100, cap); CHECK("under the cap: nothing", !stops && !relief());
+        dm_mem_watchdog(cap - 2000, cap); CHECK("under the soft level (the cap less 1 GB): nothing", !stops && !relief());
+        dm_mem_watchdog(cap - 100, cap); CHECK("between the soft level and the cap: a relief, no stop", !stops && relief());
         for (int i = 0; i < 10; i++) dm_mem_watchdog(cap + 400, cap);
         CHECK("over the cap ten checks in a row with the system not short: reliefs, no stop", !stops && relief());
-        dm_mem_watchdog(cap - 50, cap); CHECK("back under: nothing asked", !stops && !relief());
+        dm_mem_watchdog(cap - 2000, cap); CHECK("back under the soft level: nothing asked", !stops && !relief());
         sys(1); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap - 10, cap); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap + 400, cap);
         CHECK("over, short, but never three checks in a row: no stop", !stops);
         dm_mem_watchdog(cap + 400, 0); CHECK("a cap of 0 turns it off", !stops);
@@ -47,6 +52,11 @@ int main(int argc, char **argv) { @autoreleasepool {
         atomic_store(&g_guard_lv, GUARD_OK); mtl_mem_relief();
         mtl_sub_begin(); CHECK("the submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
         CHECK("a submission with the guard calm carries out the relief", g_ghost.n == 128 && !relief());
+        // The soft level, through a real submission with the guard at no level: the watchdog asks, the submit thread carries it out
+        for (uint64_t i = 0; i < 1500; i++) { NvPkg *pk = [NvPkg new]; pk->tex = [g_dev newTextureWithDescriptor:d]; res_add(pk->tex); tex_put(8200000 + i, pk); }
+        atomic_store(&g_guard_lv, GUARD_OK); dm_mem_watchdog(cap - 500, cap);
+        mtl_sub_begin(); CHECK("the submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
+        CHECK("the soft level's relief is carried out by a submission, with no stop", g_ghost.n == 128 && !relief() && !stops);
         mtl_drain(); defer_drain();
     }
     printf("t_mem_watchdog%s%s: %d checks, %d failed\n", *mode ? " " : "", mode, checks, failed);

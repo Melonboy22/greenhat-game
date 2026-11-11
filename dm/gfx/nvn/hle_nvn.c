@@ -1600,14 +1600,29 @@ NVN(nvnQueueAcquireTexture, NVNqueueAcquireTextureResult, NVNqueue *q, NVNwindow
 // let go of what it can (mtl_mem_relief: the GPU memory guard's eviction, the ring of finalized serials down to an eighth of its floor), and checks again 300 frames later. It stops the game
 // only while the system is short of memory too (mtl_mem_sys_low: the guard's system side at its eviction level) after three checks over the cap in a row, or at once past the cap and 1.5 GB,
 // which only a runaway reaches (the cap's purpose: host memory that grows without end took machines into a kernel panic). Before, it exited at the first check over the cap with no word:
-// Ocarina of Time on a 16 GB M5 at 12,322 MB of a 12 GB cap, with a quarter of memory free. The stop says why in the front end's alert (front_memory_stop) and exits with status 86
+// Ocarina of Time on a 16 GB M5 at 12,322 MB of a 12 GB cap, with a quarter of memory free. The stop says why in the front end's alert (front_memory_stop) and exits with status 86.
+// Below the cap a soft level (DM_MEM_SOFT_GB; default the cap less 1 GB, 12 GB on a 16 GB Mac; 0 = none) asks for the same relief, never a stop: kern.memorystatus_level, which the
+// GPU memory guard's own eviction follows, said 18-25 % available while the game paged at 9-16 fps with a 12.7-13 GB footprint, so the guard let go of nothing
 void mtl_mem_relief(void); int mtl_mem_sys_low(void);
+static long long mem_soft_mb(long long cap) {
+    static long long soft = -2; if (soft == -2) { const char *e = getenv("DM_MEM_SOFT_GB"); soft = e && *e ? (long long)(strtod(e, NULL) * 1024) : -1; if (soft < -1) soft = -1; }
+    return soft >= 0 ? soft : cap > 1024 ? cap - 1024 : 0;
+}
 __attribute__((weak)) void front_memory_stop(unsigned long long used_mb, unsigned long long cap_mb) { (void)used_mb; (void)cap_mb; _exit(86); }   // no window, iOS, the tests: as before
 void dm_mem_watchdog(unsigned long long mb, long long cap);   // the tests call it (t_mem_watchdog)
 void dm_mem_watchdog(unsigned long long mb, long long cap) {
     static int over, stopped; static unsigned long long lines;
     if (cap <= 0 || stopped) return;
-    if (mb <= (unsigned long long)cap) { if (over && lines++ < 32) LOG("memory watchdog: resident %llu MB, under the limit of %lld MB again (frame %llu)", mb, cap, (unsigned long long)g_frame); over = 0; return; }
+    if (mb <= (unsigned long long)cap) {
+        if (over && lines++ < 32) LOG("memory watchdog: resident %llu MB, under the limit of %lld MB again (frame %llu)", mb, cap, (unsigned long long)g_frame);
+        over = 0;
+        long long soft = mem_soft_mb(cap); static unsigned long long soft_lines;
+        if (soft > 0 && mb > (unsigned long long)soft) {   // the soft level: a relief, no stop
+            if (soft_lines++ < 16) LOG("memory watchdog: resident %llu MB over the soft level of %lld MB (frame %llu): letting go of what the graphics layer can", mb, soft, (unsigned long long)g_frame);
+            mtl_mem_relief();
+        }
+        return;
+    }
     over++; int low = mtl_mem_sys_low(), runaway = mb > (unsigned long long)cap + 1536;
     if (runaway || (over >= 3 && low)) {
         stopped = 1;
