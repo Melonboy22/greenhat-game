@@ -715,14 +715,19 @@ static void guard_stop(uint64_t used) {
     front_gpu_memory_stop(used >> 20, g_guard.wall >> 20);
 }
 // The submit thread decides while it comes round (guard_act). Past the working set, or a second over the stop level, it does not
-// The system's memory pressure events (a dispatch source, guard_init): a warning or a critical event raises the margin by 512 MB, up to 4 GB, as kern.memorystatus_level then
+// The system's memory pressure events (a dispatch source, guard_init): a warning or a critical event raises the margin by 512 MB, up to the base plus 1 GB (below), as kern.memorystatus_level then
 // overstates what the system can give; once the system says pressure is back to normal, the margin comes down a step at a time (margin_decay). Without that the margin only grew:
 // on a 16 GB M5, three warnings over half an hour of Ocarina of Time took it to 2,560 MB. Taken straight back to the base on the normal event, as at first, it let the game run on
 // with 18-25 % reported available while it paged (6-16 fps): the normal events came while the game was at its slowest
 static void guard_pressure(unsigned long flags) {
     uint64_t base = atomic_load(&g_sys_margin_base), cur = atomic_load(&g_sys_margin), nm;
     if (!base) return;
-    if (flags & (DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL)) { nm = cur + (512ull << 20); if (nm > (4096ull << 20)) nm = MAX(4096ull << 20, base); }
+    // How high warnings may take it: DM_NVN_SYS_MARGIN_MAX_MB, default the base plus 1 GB (2 GB with the default base). Up to 4 GB, as before, an hour of Ocarina of Time on a 16 GB M5
+    // (oot-plus 80344c15) ran 68 minutes at 7.1 GB with 0-1 % of frames dropped, then a heavier area took it to 12.5 GB, four warnings in two minutes took the margin to 3,584 MB, and
+    // the guard ended the game with 3,440 MB left to give and 9 % of frames dropped. The two runs before were ended the same way with 2,457 and 2,949 MB left. The memory watchdog
+    // (hle_nvn.c, on the game's own footprint) still stops a runaway
+    static uint64_t top = 0; if (!top) { const char *e = getenv("DM_NVN_SYS_MARGIN_MAX_MB"); top = e && *e ? strtoull(e, NULL, 0) << 20 : base + (1024ull << 20); if (top < base) top = base; }
+    if (flags & (DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL)) { nm = cur + (512ull << 20); if (nm > top) nm = top; }
     else if (flags & DISPATCH_MEMORYPRESSURE_NORMAL) { if (!atomic_load(&g_margin_normal)) atomic_store(&g_margin_normal, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); MLOG("GPU memory guard: the system reports memory pressure back to normal (%lu): the margin of %llu MB comes down a step per %llu s from here", flags, (unsigned long long)(cur >> 20), (unsigned long long)(margin_decay_ns() / 1000000000ull)); return; }
     else return;
     atomic_store(&g_margin_normal, 0);   // a warning: the way down starts again at the next normal event

@@ -11,9 +11,11 @@ void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
 #define CHECK(c, s) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", s); } } while (0)
-int main(void) { @autoreleasepool {
+int main(int argc, char **argv) { @autoreleasepool {
     setenv("DM_NVN_SYS_MARGIN_MB", "1048576", 1);   // a 1 TB margin: the system never has that much left
-    setenv("DM_NVN_SYS_MARGIN_DECAY_S", "0", 1);   // the margin comes down a step at each tick (margin_decay)
+    setenv("DM_NVN_SYS_MARGIN_DECAY_S", "0", 1);
+    int deflt = argc > 1 && !strcmp(argv[1], "--default-max");   // a run of its own: the cap is read once
+    if (!deflt) setenv("DM_NVN_SYS_MARGIN_MAX_MB", "4096", 1);   // the checks below take warnings up to 4 GB   // the margin comes down a step at each tick (margin_decay)
     mtl_init();
     CHECK(atomic_load(&g_sys_margin) == (1048576ull << 20), "the margin comes from DM_NVN_SYS_MARGIN_MB");
     guard_sys_tick();
@@ -29,6 +31,12 @@ int main(void) { @autoreleasepool {
     // Memory pressure events (guard_pressure): a warning raises the margin by 512 MB, up to 4 GB; back to normal, it comes down a step per DM_NVN_SYS_MARGIN_DECAY_S (0 here: a step at
     // each tick) with no warning in between (margin_decay)
     atomic_store(&g_sys_margin_base, 1024ull << 20); atomic_store(&g_sys_margin, 1024ull << 20);
+    if (deflt) {   // DM_NVN_SYS_MARGIN_MAX_MB unset: warnings take the margin to the base plus 1 GB at most
+        for (int i = 0; i < 8; i++) guard_pressure(DISPATCH_MEMORYPRESSURE_WARN);
+        CHECK(atomic_load(&g_sys_margin) == (2048ull << 20), "by default warnings raise the margin to the base plus 1 GB (2,048 MB), no further");
+        printf("t_guard_sys (default max): %d checks, %d failed\n", checks, failed);
+        return failed != 0;
+    }
     guard_pressure(DISPATCH_MEMORYPRESSURE_WARN); guard_pressure(DISPATCH_MEMORYPRESSURE_WARN); guard_pressure(DISPATCH_MEMORYPRESSURE_CRITICAL);
     CHECK(atomic_load(&g_sys_margin) == (2560ull << 20), "three pressure events raise the margin to 2,560 MB");
     for (int i = 0; i < 8; i++) guard_pressure(DISPATCH_MEMORYPRESSURE_WARN);

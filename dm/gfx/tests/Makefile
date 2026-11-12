@@ -176,6 +176,10 @@ t_bc_alias: t_bc_alias.m $(MTL_T_DEP)
 check_t_bc_alias: RUN_ENV = MTL_DEBUG_LAYER=1
 t_guard_sys: t_guard_sys.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_guard_sys.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_guard_sys
+check_t_guard_sys: t_guard_sys
+	MTL_DEBUG_LAYER=1 ./t_guard_sys
+	MTL_DEBUG_LAYER=1 ./t_guard_sys --default-max
 t_tex_fit_root: t_tex_fit_root.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_tex_fit_root.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_tex_fit_root
