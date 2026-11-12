@@ -5081,6 +5081,9 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
 #endif
     MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (%u of them unreferenced; evicted with pools %llu, on storage takeover %llu, idle %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total), retired but held by a serial %u, recycled render-target heaps made %llu, reused %llu, freed %llu, waiting %u (%llu MB); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, aorph, (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)g_alias_idle, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, nwait,
          (unsigned long long)g_rh_made, (unsigned long long)g_rh_reused, (unsigned long long)g_rh_trimmed, rh_n, (unsigned long long)(rh_bytes >> 20), avail);
+    // In a pool of their own: this runs on a guest thread whose outer pool never drains, and the objects these loops read (the set's members, a texture's heap or parent) come back
+    // retained and autoreleased. Without it every object read stayed alive for good: 6.2 GB allocated outside the residency set after 9,000 frames, the game ended at 14.9 GB (427f7672)
+    @autoreleasepool {
     { uint64_t kind[4] = {0}, count[4] = {0};   // the memory budget, every 300 frames: what the footprint is made of, to see what an area change adds (the stop report had it only once)
       pthread_mutex_lock(&g_res_mu);
       for (id<MTLAllocation> o in g_res_objects.allObjects) { int k = [(id)o conformsToProtocol:@protocol(MTLTexture)] ? 0 : [(id)o conformsToProtocol:@protocol(MTLHeap)] ? 1 : ((id<MTLBuffer>)o).storageMode == MTLStorageModeShared ? 2 : 3; kind[k] += o.allocatedSize; count[k]++; }
@@ -5101,6 +5104,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
       CFRelease(once); ge = g_ghost.n; pthread_mutex_unlock(&g_smu); CFRelease(lately);
       MLOG("finalized-serial ring up to frame %llu: %u entries, %u textures only it holds, %llu MB: %llu MB the trim can let go now, %llu MB packaged and used lately, %llu MB not packaged (kept) (the GPU memory guard trims it under memory pressure, DM_NVN_GHOST_TRIM_MIN)",
            frame, ge, gn, (unsigned long long)(gb >> 20), (unsigned long long)(kb[0] >> 20), (unsigned long long)(kb[1] >> 20), (unsigned long long)(kb[2] >> 20)); }
+    }
     if (g_gptr_draws) MLOG("bind-time pointers up to frame %llu: %llu sites encoded, %llu of them named a pool (%llu per mille); %llu raw-load shader bindings, %llu of them with a site empty or no site (they rely on the table)", frame, (unsigned long long)g_gptr_sites, (unsigned long long)g_gptr_filled, (unsigned long long)(g_gptr_sites ? g_gptr_filled * 1000 / g_gptr_sites : 0), (unsigned long long)g_gptr_draws, (unsigned long long)g_gptr_short);
     { void mtl_vc_stats(unsigned *, uint64_t *, uint64_t *), mtl_tb2_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *); uint64_t mtl_tex_mis_count(void); unsigned vn; uint64_t vh, vm, tb, tm, tf, tc, tcb;
       mtl_vc_stats(&vn, &vh, &vm); mtl_tb2_stats(&tb, &tm, &tf, &tc, &tcb);
