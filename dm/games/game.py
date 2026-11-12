@@ -229,6 +229,10 @@ def header_one(g):
     if rtl not in ('on', 'off'): sys.exit(f'{g.id}: rt_lossy must be on or off: {rtl}')
     psr = g.get('pool_skip_retired', 'off')   # pool tables give a retired texture ID with no view that no shader has read the dummy instead of a texture made again (nvn_mtl.m pool_entry; DM_NVN_POOL_SKIP_RETIRED overrides): on / off
     if psr not in ('on', 'off'): sys.exit(f'{g.id}: pool_skip_retired must be on or off: {psr}')
+    gsk = g.get('gmem_skip', 'off')   # compressible, shader code and GPU no-access pools stay out of the raw global memory table until a binding makes them resident (nvn_mtl.m mtl_pool_noraw; DM_NVN_GMEM_SKIP overrides): on / off
+    if gsk not in ('on', 'off'): sys.exit(f'{g.id}: gmem_skip must be on or off: {gsk}')
+    gnb = g.get('gmem_nobig', 'off')   # a large pool is listed in the raw global memory table by its resident chunks, never wired whole (nvn_mtl.m mtl_pool_noraw; DM_NVN_GMEM_NOBIG overrides): on / off
+    if gnb not in ('on', 'off'): sys.exit(f'{g.id}: gmem_nobig must be on or off: {gnb}')
     tsf = g.get('tex_soft', 'off')   # large block-compressed packaged textures kept without their finest level (nvn_mtl.m tex_soft; DM_NVN_TEX_SOFT overrides): on / off
     if tsf not in ('on', 'off'): sys.exit(f'{g.id}: tex_soft must be on or off: {tsf}')
     tsa = g.get('tex_soft_arrays', 'on')   # with tex_soft: whether 2D arrays are soft too (nvn_mtl.m tex_soft; DM_NVN_TEX_SOFT_ARRAYS overrides): on / off
@@ -281,7 +285,7 @@ def header_one(g):
          f'#define DM_GAME_OPMODE {int(om == "console")}',
          f'#define DM_GAME_START_DYNAMIC_RESOLUTION {int(dyr == "on")}', f'#define DM_GAME_START_OUTPUT {q("native" if outp == "native" else "0")}', f'#define DM_GAME_START_UPSCALE {q(upd)}',
          f'#define DM_GAME_RT_LOSSY {int(rtl == "on")}', f'#define DM_GAME_POOL_SKIP_RETIRED {int(psr == "on")}',
-         f'#define DM_GAME_TEX_SOFT {int(tsf == "on")}', f'#define DM_GAME_TEX_SOFT_ARRAYS {int(tsa == "on")}', f'#define DM_GAME_TEX_SOFT_LEVELS {int(tsl)}',
+         f'#define DM_GAME_GMEM_SKIP {int(gsk == "on")}', f'#define DM_GAME_GMEM_NOBIG {int(gnb == "on")}', f'#define DM_GAME_TEX_SOFT {int(tsf == "on")}', f'#define DM_GAME_TEX_SOFT_ARRAYS {int(tsa == "on")}', f'#define DM_GAME_TEX_SOFT_LEVELS {int(tsl)}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
          f'#define DM_GAME_SHADER_KEY_SKIP_OFF {sko:#x}', f'#define DM_GAME_SHADER_KEY_SKIP_LEN {skl:#x}',

@@ -679,7 +679,7 @@ static want_list g_bf_want = {"DM_NVN_BF_WANT", PTHREAD_MUTEX_INITIALIZER}, g_du
 void bf_want_note(const char *key) { want_note(&g_bf_want, key); }
 
 // ---------- Memory pools ----------
-typedef struct { uintptr_t lo, hi; uintptr_t base; __unsafe_unretained id<MTLBuffer> buf; uint64_t gpu; const void *key; int res; uint64_t born; uintptr_t end; uint64_t unk; uint32_t n_tex_reads, n_other; } pool_ent;   // res: already in the residency set (on demand, see pool_res); born: when it was added (ns); end, unk: a large pool's chunk (see BIG_MIN); n_tex_reads / n_other: lookups by texture uploads / by anything else (mem_census)
+typedef struct { uintptr_t lo, hi; uintptr_t base; __unsafe_unretained id<MTLBuffer> buf; uint64_t gpu; const void *key; int res; uint64_t born; uintptr_t end; uint64_t unk; uint32_t n_tex_reads, n_other; int noraw; } pool_ent;   // res: already in the residency set (on demand, see pool_res); born: when it was added (ns); end, unk: a large pool's chunk (see BIG_MIN); n_tex_reads / n_other: lookups by texture uploads / by anything else (mem_census)
 static pool_ent *g_pools; static int g_npool, g_cap;
 static int g_pidx_ok, g_plast = -1;   // whether the address→pool index is valid, the last hit (pool_find)
 static NSMutableArray *g_keep;                  // Holds the buffer references (pool_ent has non-owning pointers)
@@ -966,6 +966,7 @@ void mtl_pool_addressed(const void *mem, uint64_t size) {
 static void pool_res(int i) {
     if (g_pools[i].res) return;
     res_add(g_pools[i].buf); res_commit(); g_pools[i].res = 1; g_pool_res_n++;
+    if (g_pools[i].noraw) atomic_fetch_add(&g_pool_gen, 1);   // gmem_skip / gmem_nobig: the raw pool table lists it from now on, so it is built again before the next draw that uses it
 }
 // A large pool in chunks. Metal wires a zero-copy buffer whole while it is in the residency set, so one buffer over a large pool pins all of it, whatever the GPU reads. Mario Kart World's 2,427 MB
 // graphics pool: the GPU has touched 1,111 MB by the first race, 326 MB of it in the last 1,500 frames; on a 16 GB Mac the driver then spent half its time wiring and unwiring (3.2 s of a 6 s Metal System
@@ -974,7 +975,7 @@ static void pool_res(int i) {
 // pools' buffers do at shared pages; GPU addresses are not contiguous across them, so a lookup must say how far it reads. One that does not know (length 1: an indirect draw's index buffer, a raw storage
 // address) gets BIG_UNKNOWN past its address. Raw global memory, whose pool table the shader walks by itself, takes the whole pool: big_full
 enum { BIG_MIN = 512u << 20, BIG_S = 16u << 20, BIG_UNKNOWN = 64u << 20, BIG_MAX = 32 };
-typedef struct { uintptr_t lo, hi, a, b; const void *mem; int *chunk, full; NSMutableArray *old; } big_pool;   // chunk: stride → g_pools index + 1; full: the whole pool's entry + 1; old: buffers a longer chunk replaced, alive with the pool
+typedef struct { uintptr_t lo, hi, a, b; const void *mem; int *chunk, full; NSMutableArray *old; int noraw; } big_pool;   // chunk: stride → g_pools index + 1; full: the whole pool's entry + 1; old: buffers a longer chunk replaced, alive with the pool
 static big_pool g_big[BIG_MAX]; static int g_nbig;
 static id<MTLBuffer> pool_buf(uintptr_t a, uintptr_t b);   // a pool's zero-copy buffer over [a, b), made over writable pages (below)
 static int big_of(uint64_t addr) { for (int i = 0; i < g_nbig; i++) if (addr >= g_big[i].lo && addr < g_big[i].hi) return i; return -1; }
@@ -1070,8 +1071,31 @@ static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end, uint6
     if (g_npool == g_cap) { g_cap = g_cap ? g_cap * 2 : 64; g_pools = realloc_or_die(g_pools, g_cap * sizeof *g_pools, "the memory pool table"); }
     g_pidx_ok = 0; atomic_fetch_add(&g_pool_gen, 1);
     g_pools[g_npool++] = (pool_ent){lo < b->lo ? b->lo : lo, hi > b->hi ? b->hi : hi, lo, buf, buf.gpuAddress, b->mem, 0, clock_gettime_nsec_np(CLOCK_MONOTONIC), end > b->hi ? b->hi : end, unk};
+    g_pools[g_npool - 1].noraw = b->noraw;   // a chunk of a large pool the raw pool table does not reach whole (gmem_nobig): listed once resident
     [g_keep addObject:buf];
     return g_npool - 1;
+}
+// Profile gmem_skip (DM_NVN_GMEM_SKIP=0 / 1; from kid-with-sword-remake a758ea2d): pools the raw global memory table leaves out unless something else made them resident, by their
+// NVN flags: compressible (render-target storage, which the host draws into textures of its own, and whose compressed layout a pointer cannot read), shader code (the guest's Ampere
+// binaries: the host runs its translations) and GPU no-access. The table makes each pool it lists resident, which wires it whole.
+// Profile gmem_nobig (DM_NVN_GMEM_NOBIG=0 / 1): a large pool (BIG_MIN) gets no whole-pool entry for the table either: the table lists its chunks that lookups made resident, so only
+// what the GPU reaches through bindings is wired. Ocarina of Time's 2,432 MB main pool was otherwise wired whole once the table met an address in it: on a 16 GB M5 the guest pools
+// in the residency set were 2.5 GB from the first minutes, 8.8 GB wired in all, and the game dropped 190 of 300 frames at a 10.5 GB footprint with 4 GB of swap in use.
+// A pool left out reads as no pool through a raw pointer until a binding makes it resident (pool_res bumps g_pool_gen for it)
+static uint64_t g_noraw_n, g_noraw_bytes;   // pools marked, and their sizes, for the memory budget line
+static int gmem_skip_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_GMEM_SKIP"); v = e && *e ? atoi(e) != 0 : DM_GAME_GMEM_SKIP;
+    if (v) MLOG("raw global memory: compressible, shader code and GPU no-access pools are left out of the pool table unless already resident (gmem_skip; DM_NVN_GMEM_SKIP=0 lists them)"); } return v; }
+static int gmem_nobig_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_GMEM_NOBIG"); v = e && *e ? atoi(e) != 0 : DM_GAME_GMEM_NOBIG;
+    if (v) MLOG("raw global memory: large pools are listed by their resident chunks, never wired whole (gmem_nobig; DM_NVN_GMEM_NOBIG=0 wires them whole)"); } return v; }
+void mtl_pool_noraw(const void *mem, uint64_t size, int flags) {   // right after mtl_pool_add (hle_nvn.c)
+    int byflags = gmem_skip_on() && (flags & (NVN_MEMORY_POOL_FLAGS_COMPRESSIBLE | NVN_MEMORY_POOL_FLAGS_SHADER_CODE | NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)), nobig = gmem_nobig_on(), hit = 0;
+    if (!byflags && !nobig) return;
+    pthread_mutex_lock(&g_mu);
+    for (int k = 0; k < g_nbig; k++) if (g_big[k].mem == mem) { g_big[k].noraw = 1; hit = 1; }   // a large pool: by gmem_nobig alone too
+    if (byflags || hit) for (int i = 0; i < g_npool; i++) if (g_pools[i].key == mem) { g_pools[i].noraw = 1; hit = 1; }
+    if (hit) { g_noraw_n++; g_noraw_bytes += size; }
+    uint64_t n = g_noraw_n; pthread_mutex_unlock(&g_mu);
+    if (hit && n <= 6) MLOG("raw global memory: pool %p, %llu MB (flags %#x) is left out of the pool table until a binding makes it resident", mem, (unsigned long long)(size >> 20), flags);
 }
 // The entry of a large pool for [addr, addr + len): the chunk of its stride, made or lengthened to reach as far as asked; -1 past the pool's end
 static int big_lookup(big_pool *b, uint64_t addr, uint64_t len) {
@@ -5089,9 +5113,9 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
       for (id<MTLAllocation> o in g_res_objects.allObjects) { int k = [(id)o conformsToProtocol:@protocol(MTLTexture)] ? 0 : [(id)o conformsToProtocol:@protocol(MTLHeap)] ? 1 : ((id<MTLBuffer>)o).storageMode == MTLStorageModeShared ? 2 : 3; kind[k] += o.allocatedSize; count[k]++; }
       pthread_mutex_unlock(&g_res_mu);
       uint64_t ga = g_dev.currentAllocatedSize >> 20, set = (kind[0] + kind[1] + kind[2] + kind[3]) >> 20;
-      MLOG("memory budget up to frame %llu: footprint %llu MB = GPU allocated %llu MB + the rest %lld MB; in the residency set: textures %llu, %llu MB; heaps %llu, %llu MB (GPU-only pool heaps %llu, %llu MB); shared buffers (guest pools) %llu, %llu MB; private buffers %llu, %llu MB; allocated outside the set %lld MB",
+      MLOG("memory budget up to frame %llu: footprint %llu MB = GPU allocated %llu MB + the rest %lld MB; in the residency set: textures %llu, %llu MB; heaps %llu, %llu MB (GPU-only pool heaps %llu, %llu MB); shared buffers (guest pools) %llu, %llu MB; private buffers %llu, %llu MB; allocated outside the set %lld MB; pools kept out of the raw pool table until bound %llu, %llu MB",
            frame, (unsigned long long)rss_mb, (unsigned long long)ga, (long long)rss_mb - (long long)ga, (unsigned long long)count[0], (unsigned long long)(kind[0] >> 20), (unsigned long long)count[1], (unsigned long long)(kind[1] >> 20),
-           (unsigned long long)g_pool_heap_n, (unsigned long long)(g_pool_heap_bytes >> 20), (unsigned long long)count[2], (unsigned long long)(kind[2] >> 20), (unsigned long long)count[3], (unsigned long long)(kind[3] >> 20), (long long)ga - (long long)set); }
+           (unsigned long long)g_pool_heap_n, (unsigned long long)(g_pool_heap_bytes >> 20), (unsigned long long)count[2], (unsigned long long)(kind[2] >> 20), (unsigned long long)count[3], (unsigned long long)(kind[3] >> 20), (long long)ga - (long long)set, (unsigned long long)g_noraw_n, (unsigned long long)(g_noraw_bytes >> 20)); }
     { uint64_t gb = 0, kb[3] = {0}; unsigned gn = 0, ge;   // what the ring of finalized serials alone keeps (textures of their own allocation, no live serial holding them), and of it what
       // ghost_trim could give back now (kb[0]), what it keeps as used lately (kb[1]) and what is not a packaged texture, which it never lets go (kb[2]). A texture several serials of the
       // ring name is counted once, by the first of them
@@ -11324,11 +11348,12 @@ static id<MTLBuffer> gmem_map(void) {
     for (int k = 1; k < DMSH_GMEM_MAP_ENTRIES; k++) memset(t + (size_t)k * DMSH_GMEM_MAP_ENTRY, 0xff, 8);
     int n = 1, over = 0; uint64_t end = 0;
     pthread_mutex_lock(&g_mu);
-    for (int k = 0; k < g_nbig; k++) if (!g_big[k].full && addr_meets(g_big[k].lo, g_big[k].hi)) { int n = big_new(&g_big[k], g_big[k].a, g_big[k].b, g_big[k].b, 0); if (n >= 0) g_big[k].full = n + 1; }   // the pool table reaches all of a large pool
+    for (int k = 0; k < g_nbig; k++) if (!g_big[k].full && !g_big[k].noraw && addr_meets(g_big[k].lo, g_big[k].hi)) { int n = big_new(&g_big[k], g_big[k].a, g_big[k].b, g_big[k].b, 0); if (n >= 0) g_big[k].full = n + 1; }   // the pool table reaches all of a large pool
     gen = atomic_load(&g_pool_gen); pidx_sort();
     for (int k = 0; k < g_npool; k++) {
         pool_ent *p = &g_pools[g_pidx[k]];
         if (!addr_meets(p->lo, p->hi)) continue;
+        if (p->noraw && !p->res) continue;   // gmem_skip / gmem_nobig: left out unless a binding made it resident already
         if (!p->res) { res_add(p->buf); p->res = 1; g_pool_res_n++; }
         uint64_t lo = MAX((uint64_t)p->lo, end), hi = p->hi;
         if (lo >= hi) continue;

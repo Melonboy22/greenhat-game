@@ -48,6 +48,10 @@ tex_soft_arrays	off
 pool_skip_retired	on
 # Colour render targets drawn only as attachments, with their own allocation, kept with Metal's lossy compression (nvn_mtl.m rt_lossy; about 100 MB at 720p on kid-with-sword). DM_NVN_RT_LOSSY=0 turns it off
 rt_lossy	on
+# Pools the raw global memory table would wire whole stay out of it until a binding makes them resident: render-target, shader code and GPU no-access pools (gmem_skip), and the
+# 2,432 MB main pool, listed by its resident chunks (gmem_nobig). Both from kid-with-sword-remake, which plays with them. DM_NVN_GMEM_SKIP=0 / DM_NVN_GMEM_NOBIG=0 turn them off
+gmem_skip	on
+gmem_nobig	on
 
 # ---- Shader split (shader_split.py) ----
 shader_groups	/Shader/=shader /Effect/=effect /Lib/=lib /UI/=layout
