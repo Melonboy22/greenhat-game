@@ -1604,7 +1604,7 @@ NVN(nvnQueueAcquireTexture, NVNqueueAcquireTextureResult, NVNqueue *q, NVNwindow
 // Below the cap a soft level (DM_MEM_SOFT_GB; default the cap less 2 GB, 11 GB on a 16 GB Mac; 0 = none) asks for the same relief, never a stop: kern.memorystatus_level, which the
 // GPU memory guard's own eviction follows, said 18-25 % available while the game paged at 9-16 fps with a 12.7-13 GB footprint, so the guard let go of nothing. At 1 GB under the cap
 // (12 GB) the relief came too late: entering an area on a 16 GB M5 the game dropped 466 frames a minute at 11.9 GB and 1,323 at 12.5 GB, swap 0.5 -> 3.6 GB in four minutes
-void mtl_mem_relief(void); int mtl_mem_sys_low(void);
+void mtl_mem_relief(void); void mtl_mem_relief_soft(void); int mtl_mem_sys_low(void);
 static long long mem_soft_mb(long long cap) {
     static long long soft = -2; if (soft == -2) { const char *e = getenv("DM_MEM_SOFT_GB"); soft = e && *e ? (long long)(strtod(e, NULL) * 1024) : -1; if (soft < -1) soft = -1; }
     return soft >= 0 ? soft : cap > 2048 ? cap - 2048 : 0;
@@ -1619,8 +1619,8 @@ void dm_mem_watchdog(unsigned long long mb, long long cap) {
         over = 0;
         long long soft = mem_soft_mb(cap); static unsigned long long soft_lines;
         if (soft > 0 && mb > (unsigned long long)soft) {   // the soft level: a relief, no stop
-            if (soft_lines++ < 16) LOG("memory watchdog: resident %llu MB over the soft level of %lld MB (frame %llu): letting go of what the graphics layer can", mb, soft, (unsigned long long)g_frame);
-            mtl_mem_relief();
+            if (soft_lines++ < 16) LOG("memory watchdog: resident %llu MB over the soft level of %lld MB (frame %llu): letting go of what the graphics layer can (not the ring of finalized serials)", mb, soft, (unsigned long long)g_frame);
+            mtl_mem_relief_soft();
         }
         return;
     }

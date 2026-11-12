@@ -6984,9 +6984,12 @@ static void guard_evict(int force) { @autoreleasepool {
 } }
 // On the submit thread, after a submission, with no lock held. The stop level gives the eviction its chance first: this submission's fence, then the sizes again
 void mtl_mem_relief(void) { atomic_store(&g_relief_req, 1); }
+// The watchdog's soft level (hle_nvn.c): the guard's eviction without the ring trim. Trimming there, Hyrule Castle Town on a 16 GB M5 (oot-plus d1bbd9ce) made the textures it let go
+// again at once: each relief let go of 240-1,050 finalized serials and 690-1,770 first uploads followed in the next 300 frames, with 12-23 fps. The trim stays for the cap (mtl_mem_relief)
+void mtl_mem_relief_soft(void) { int z = 0; atomic_compare_exchange_strong(&g_relief_req, &z, 2); }   // never downgrades a hard request
 int mtl_mem_sys_low(void) { return atomic_load(&g_sys_margin) && atomic_load(&g_sys_lv) >= GUARD_EVICT; }   // the guard's system side at its eviction level or past it
 static void guard_act(uint64_t fence) {
-    if (atomic_exchange(&g_relief_req, 0)) guard_evict(2);
+    { int r = atomic_exchange(&g_relief_req, 0); if (r) guard_evict(r == 1 ? 2 : 0); }   // 1: the watchdog over its cap (the ring trimmed too); 2: its soft level (no trim)
     int lv = atomic_exchange(&g_guard_lv, GUARD_OK);
     if (!lv) return;
     guard_evict(lv >= GUARD_STOP);

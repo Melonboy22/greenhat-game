@@ -56,7 +56,10 @@ int main(int argc, char **argv) { @autoreleasepool {
         for (uint64_t i = 0; i < 1500; i++) { NvPkg *pk = [NvPkg new]; pk->tex = [g_dev newTextureWithDescriptor:d]; res_add(pk->tex); tex_put(8200000 + i, pk); }
         atomic_store(&g_guard_lv, GUARD_OK); dm_mem_watchdog(cap - 500, cap);
         mtl_sub_begin(); CHECK("the submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
-        CHECK("the soft level's relief is carried out by a submission, with no stop", g_ghost.n == 128 && !relief() && !stops);
+        CHECK("the soft level's relief is carried out by a submission, with no stop, and leaves the ring alone (its textures came back at once: 12-23 fps in Castle Town)", g_ghost.n == 128 + 1500 && !relief() && !stops);
+        mtl_mem_relief_soft(); mtl_mem_relief(); CHECK("a hard request is not downgraded by a soft one before it is taken", atomic_load(&g_relief_req) == 1);
+        mtl_mem_relief_soft(); CHECK("nor a pending hard one by a later soft one", atomic_load(&g_relief_req) == 1);
+        atomic_store(&g_relief_req, 0);
         mtl_drain(); defer_drain();
     }
     printf("t_mem_watchdog%s%s: %d checks, %d failed\n", *mode ? " " : "", mode, checks, failed);
