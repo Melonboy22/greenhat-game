@@ -24,7 +24,16 @@ int main(void) { @autoreleasepool {
     mtl_pool_addressed((void *)(uintptr_t)(base + 900 * MB), 4096);
     (void)gmem_map();
     CHECK("the table gives the large pool no whole-pool entry", g_big[0].full == 0);
-    CHECK("only the chunk the lookup made is resident: far less than the pool", res_shared_bytes() > 0 && res_shared_bytes() <= 4 * BIG_S);
+    CHECK("the looked-up chunk and the addressed one are resident: far less than the pool", res_shared_bytes() > 0 && res_shared_bytes() <= 8 * BIG_S);
+    // An addressed range no binding has looked up: its chunk is resident and listed, so a shader's raw read there finds its pool (Hyrule Field's ground)
+    int at900 = -1; pthread_mutex_lock(&g_mu); at900 = pool_peek(base + 900 * MB + 100); pthread_mutex_unlock(&g_mu);
+    CHECK("the addressed range has a resident chunk", at900 >= 0 && g_pools[at900].res);
+    // A wider addressed range: every 16 MB stride it meets gets its chunk; strides it does not meet stay out
+    mtl_pool_addressed((void *)(uintptr_t)(base + 500 * MB), 40 * MB); (void)gmem_map();
+    int s1, s2, s3, out; pthread_mutex_lock(&g_mu); s1 = pool_peek(base + 500 * MB); s2 = pool_peek(base + 520 * MB); s3 = pool_peek(base + 539 * MB); out = pool_peek(base + 700 * MB); pthread_mutex_unlock(&g_mu);
+    CHECK("each stride of a wider addressed range is resident", s1 >= 0 && s2 >= 0 && s3 >= 0 && g_pools[s1].res && g_pools[s2].res && g_pools[s3].res);
+    CHECK("a stride nothing addressed or looked up has no chunk", out == -1);
+    CHECK("still far less than the pool", res_shared_bytes() <= 16 * BIG_S);
     // A compressible pool (render-target storage) with an address given out
     uint8_t *rt = mmap(NULL, 64 * MB, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (rt == MAP_FAILED) abort();
     int p0 = g_npool; mtl_pool_add(rt, 64 * MB); mtl_pool_noraw(rt, 64 * MB, NVN_MEMORY_POOL_FLAGS_COMPRESSIBLE | NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS);

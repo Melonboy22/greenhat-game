@@ -11353,6 +11353,18 @@ static id<MTLBuffer> gmem_map(void) {
     for (int k = 1; k < DMSH_GMEM_MAP_ENTRIES; k++) memset(t + (size_t)k * DMSH_GMEM_MAP_ENTRY, 0xff, 8);
     int n = 1, over = 0; uint64_t end = 0;
     pthread_mutex_lock(&g_mu);
+    // gmem_nobig: the 16 MB strides of a large pool that an addressed range meets get their chunk, resident, so the table reaches what a shader's pointer can name (an address
+    // the driver gave out, or one worked out from it) without wiring the rest. With only the chunks lookups had made, Hyrule Field's ground showed another material (a woven
+    // brown texture) after an hour on a 16 GB M5: a raw read of an addressed range no binding had reached found no pool (oot-plus 80344c15)
+    { static uint64_t said_mb = ~0ull; uint64_t cov = 0, size = 0;
+      for (int k = 0; k < g_nbig; k++) { big_pool *bp = &g_big[k]; if (bp->full || !bp->noraw) continue; size += bp->hi - bp->lo;
+          for (int i = addr_first(bp->lo); i < g_naddr && g_addr[i].lo < bp->hi; i++) {
+              uintptr_t lo = MAX(g_addr[i].lo, bp->lo), hi = MIN(g_addr[i].hi, bp->hi);
+              for (uintptr_t at = lo; at < hi; ) { uintptr_t next = MIN(hi, bp->a + ((((at - bp->a) >> 24) + 1) << 24));
+                  int e = big_lookup(bp, at, next - at); if (e >= 0 && !g_pools[e].res) { res_add(g_pools[e].buf); g_pools[e].res = 1; g_pool_res_n++; }
+                  at = next; } }
+          for (int i = 0; i < g_npool; i++) if (g_pools[i].key == bp->mem && g_pools[i].res) cov += g_pools[i].hi - g_pools[i].lo; }
+      if (size && (cov >> 20) != said_mb) { static int nl; if (nl++ < 24) MLOG("raw global memory: large pools by their addressed and looked-up chunks (gmem_nobig): %llu MB of %llu MB resident", (unsigned long long)(cov >> 20), (unsigned long long)(size >> 20)); said_mb = cov >> 20; } }
     for (int k = 0; k < g_nbig; k++) if (!g_big[k].full && !g_big[k].noraw && addr_meets(g_big[k].lo, g_big[k].hi)) { int n = big_new(&g_big[k], g_big[k].a, g_big[k].b, g_big[k].b, 0); if (n >= 0) g_big[k].full = n + 1; }   // the pool table reaches all of a large pool
     gen = atomic_load(&g_pool_gen); pidx_sort();
     for (int k = 0; k < g_npool; k++) {
