@@ -3212,6 +3212,9 @@ static int tex_soft(const tex_t *t) {
     // DM_NVN_TEX_SOFT_ARRAYS=0 (profile tex_soft_arrays off): 2D arrays stay whole too. Ocarina of Time's reflection probes are one: its water under Kokiri Forest's canopy showed flat sky
     static int arrays = -1; if (arrays < 0) { const char *e = getenv("DM_NVN_TEX_SOFT_ARRAYS"); arrays = e && *e ? atoi(e) != 0 : DM_GAME_TEX_SOFT_ARRAYS; }
     if (!on || !t->has_layout || !t->mem || t->d.levels < 3 || (t->d.target != 1 && (t->d.target != 4 || !arrays))) return 0;
+    // A texture the GPU may write (a render target, compressible storage, an image) stays whole: its writes come by paths a soft texture's level map does not follow (bcrt_attach's BC
+    // render targets, compute stores, copies through an alias). The game's woven-ground bug on oot-plus 04b4e7f3 went away with DM_NVN_TEX_SOFT=0 and with no other saver changed
+    if (t->d.flags & (NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) return 0;
     if (t->pool && t->pool->magic == MAGIC('P', 'O', 'O', 'L') && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL)) return 0;   // a sparse pool's: tiles that follow the game's mappings
     if (MAX(t->d.width, t->d.height) < 512 || MIN(t->d.width, t->d.height) < 256) return 0;
     int bw, bh; if (!nvn_fmt_bpb(t->d.format, &bw, &bh) || bw < 2) return 0;
@@ -15727,6 +15730,7 @@ static int bc_alias_copy(const p_copy_t2t *c, id<MTLTexture> s, unsigned sl, uns
         if (!g_treg[i].ok || g_treg[i].gone || t->mem != dt->mem || t->serial == dt->serial || t->d.target != NVN_TEXTURE_TARGET_2D) continue;
         if ((t->d.width + 3) / 4 != dt->d.width || (t->d.height + 3) / 4 != dt->d.height) continue;
         uint32_t mf = 0; if (!nvn_fmt_to_mtl(t->d.format, &mf, NULL) || bc_block_bytes((MTLPixelFormat)mf) != (int)tb) continue;
+        soft_harden(t);   // the copy writes it at the game's level and block position: whole first (tex_soft; a soft one took the bytes at the wrong place: woven ground in Hyrule Field)
         id<MTLTexture> m = tex_mtl(t); while (m.parentTexture) m = m.parentTexture;
         if (m && bc_block_bytes(m.pixelFormat) == (int)tb) { bc = m; bser = t->serial; }
     }

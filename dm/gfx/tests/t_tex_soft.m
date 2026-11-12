@@ -53,6 +53,8 @@ int main(void) { @autoreleasepool {
     tex_t rgba = t; rgba.d.format = NVN_FORMAT_RGBA8; CHECK("an uncompressed one stays whole", !tex_soft(&rgba));
     tex_t arr = t; arr.d.target = 4; CHECK("a 2D array stays whole with tex_soft_arrays off", !tex_soft(&arr));
     tex_t fill = t; fill.has_layout = 0; CHECK("one with no packaged layout stays whole", !tex_soft(&fill));
+    tex_t rt = t; rt.d.flags = NVN_TEXTURE_FLAGS_COMPRESSIBLE; CHECK("a compressible one (a render target's storage) stays whole", !tex_soft(&rt));
+    tex_t img = t; img.d.flags = NVN_TEXTURE_FLAGS_IMAGE; CHECK("an image (compute stores) stays whole", !tex_soft(&img));
 
     mtl_sub_begin(); id<MTLTexture> image = tex_mtl(&t); finish();
     CHECK("the soft texture resolves", image != nil);
