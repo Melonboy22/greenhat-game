@@ -6,9 +6,14 @@ A personal build for playing The Legend of Zelda: Ocarina of Time (Switch 2, v13
 
 **What's changed for a 16 GB Mac:**
 - Memory savers: smaller copies of large textures, lossy compression for some render targets, and less of the game's main memory pool pinned for the GPU.
+- Memory that no longer piles up (November 2026):
+  - Textures the game has finished with are let go once nothing has used them for about 4 seconds, instead of being kept in a list of 32,768. In a long session that list had grown to 1.8 GB.
+  - When the game frees a block of memory, the textures made in it go too. The shadow map's 288 MB block used to stay through all of Hyrule Field.
+  - Scratch memory for drawing commands is shared between frames, and spare blocks are released once idle.
+  - Render targets that change size at one spot share their pool's memory, instead of each spot getting a heap of its own. That was 0.4–2.5 GB of extra heaps, docked at 1440p.
 - Memory safety: a gentler GPU memory guard, and a watchdog that frees memory before stopping the game.
-- Fixes: missing or woven ground textures, flower-bush holes, and a few upstream rendering fixes.
-- Extras: Upscaling presets (Quality / Balanced / Performance) and opt-in frame generation.
+- Fixes: missing or woven ground textures, flower-bush holes, a black window when a smaller Resolution was picked in handheld mode, and a few upstream rendering fixes.
+- Extras: Upscaling presets that show the resolution the 3D is drawn at (Quality about 965p, Balanced about 835p, Performance 720p, in a 1440p frame), a 1280 × 720 Resolution for docked play, and opt-in frame generation.
 
 The details, measurements and what is still open are in the [game's note](dm/games/0400486024DEC000/README.md#memory).
 
@@ -18,9 +23,9 @@ The details, measurements and what is still open are in the [game's note](dm/gam
 
 | Project | What this build took from it |
 |---|---|
-| [seedds/nxnative](https://github.com/seedds/nxnative) (MIT) | The engine everything runs on. Four of its open pull requests are merged here: #2226 (holes in Hyrule Castle's flower bushes), #2249 (stale draw state), #2230 (a buffer check) and #2241 (frame generation). |
+| [seedds/nxnative](https://github.com/seedds/nxnative) (MIT) | The engine everything runs on. Four of its open pull requests are merged here: #2226 (holes in Hyrule Castle's flower bushes), #2249 (stale draw state), #2230 (a buffer check) and #2241 (frame generation). Three of its later memory changes are ported and adapted: finished textures kept only while in use (`034e91a8`, here with a 4-second idle time instead of half a second), a freed memory pool ending its textures (`13c35e90`), and idle scratch-memory blocks released (`3fe574df`, #2862). Its release of drawn-over render targets (`8653238e`) was not taken: the swordboi base's per-pool heaps already hold them. |
 | [Fasen24-AI/swordboiMacNative](https://github.com/Fasen24-AI/swordboiMacNative) (MIT) | The base: this build starts from its commit `d57562fc`, with its lighting, terrain, GPU memory guard and Castle Town memory fixes. |
-| [cheemu21/kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake) (MIT) | The memory savers, ported to the swordboi base: smaller copies of large textures (`tex_soft`), the retired-texture shortcut (`pool_skip_retired`), lossy render targets (`rt_lossy`) and the pool-pinning settings (`gmem_skip`, `gmem_nobig`). Its frame generation came in through #2241. This repository is a fork of it. |
+| [cheemu21/kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake) (MIT) | The memory savers, ported to the swordboi base: smaller copies of large textures (`tex_soft`), the retired-texture shortcut (`pool_skip_retired`), lossy render targets (`rt_lossy`) and the pool-pinning settings (`gmem_skip`, `gmem_nobig`). Its frame generation came in through #2241. Its `ff` branch was reviewed in November 2026: 64 spare texture-table buffers instead of 16 (FF10) were taken; its iPhone and launcher work was not. This repository is a fork of it. |
 | [ly05010419/MacNativeGames](https://github.com/ly05010419/MacNativeGames) (MIT) | Reviewed for Ocarina of Time fixes. It runs the game on a different engine, so no code was taken. |
 | [PranavDupati/ninboy-hat-for-macos](https://github.com/PranavDupati/ninboy-hat-for-macos) (MIT) | Reviewed. A keyboard and mouse mode was adapted from it; it is off by default and not working yet. Its modified game asset was left out. |
 | [azmasm/hermit](https://github.com/azmasm/hermit) (formerly switch2mac) | The app that builds and launches this build. Nothing from it is in this repository. |
@@ -60,7 +65,7 @@ What you need to build and play it:
 - **Xcode, its Metal Toolchain and the .NET 10 SDK.** Hermit's setup checks for them and tells you what is missing.
 - **A controller** (Xbox, PlayStation or Switch Pro) or the keyboard. The mouse does nothing in this build.
 
-I play at the Quality upscaling preset (render scale 0.67) with sharpening at 0.3.
+I play at the Quality upscaling preset (render scale 0.67) with sharpening at 0.3, Resolution on the game's own (1440p). Higher Resolutions need more memory than a 16 GB Mac has to spare with this game: at 4K docked it reached 13 GB and dropped frames. Lower ones look soft and gained no frame rate on my Mac, which is held back by the CPU side, not the GPU. The Resolution setting only applies docked.
 
 ## How to play
 
