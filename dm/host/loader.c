@@ -319,6 +319,11 @@ void dm_fps_state_apply(void) {
     // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880, Ocarina of Time's view-size update): 1.0 keeps the game's
     // own size and dynamic resolution; another factor fixes the size at that fraction (DM_RENDER_SCALE, 0.5 to 1.0). Independent of the frame step: written at target 0 too
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f;
+    // Upscaling preset (DM_UPSCALE_PRESET, the launcher's Upscaling preset): DLSS's named render scales, which take the place of the Render scale when one is chosen; custom (or unset)
+    // keeps DM_RENDER_SCALE. The game's upscaler (MetalFX with DM_UPSCALER=metalfx, a spatial scaler) brings the picture back to the output size
+    { const char *pr = getenv("DM_UPSCALE_PRESET"); const char *ps = !pr ? NULL : !strcmp(pr, "quality") ? "0.67" : !strcmp(pr, "balanced") ? "0.58" : !strcmp(pr, "performance") ? "0.5" : NULL;
+      if (pr && !ps && strcmp(pr, "custom")) LOG("[RED] DM_UPSCALE_PRESET=%s: must be custom, quality, balanced or performance; the Render scale applies", pr);
+      if (ps) { LOG("%s: upscaling preset %s: render scale %s%s", g_fps_mod, pr, ps, rs ? " in place of DM_RENDER_SCALE" : ""); rs = ps; } }
     if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the game's size", rs); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     // Fixed resolution (the builds with a fixed-resolution stub, Ocarina of Time v131072: dm/games/0400486024DEC000/patches.py): DM_FIXED_RESOLUTION=1 makes the game's resolution

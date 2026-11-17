@@ -3,7 +3,7 @@
 The screen before the game starts shows the settings the game supports. A setting that only matters while another is on appears under it and disappears when that one is turned off. Tap **Play** to start; the app remembers your choices for the next start. All settings are on one scrollable screen, under **Game**, **Controls** and **Performance**. Tap a menu or move a slider there; no settings page needs opening. **Upscaling** is in **Game**, beside **Console mode**. A Mac app shows the same settings in a [window of its own](#the-mac-settings-window).
 
 - [Tested defaults](#tested-defaults)
-- [Game](#game): [Frame rate](#frame-rate), [Frame generation](#frame-generation), [Render scale](#render-scale), [Fixed resolution](#fixed-resolution), [Output](#output), [Resolution](#resolution), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Sharpening](#sharpening), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
+- [Game](#game): [Frame rate](#frame-rate), [Frame generation](#frame-generation), [Upscaling preset](#upscaling-preset), [Render scale](#render-scale), [Fixed resolution](#fixed-resolution), [Output](#output), [Resolution](#resolution), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Sharpening](#sharpening), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Press a button to join](#press-a-button-to-join)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
@@ -39,6 +39,10 @@ Offered with **30 fps**, for games drawn with NVN. The game draws 30 frames a se
 ### Dynamic resolution
 
 Off, the default, keeps the 3D picture at full size. On lets the game lower its resolution when frames run heavy and raise it again when they fit, as on the Switch: steadier frame rate, at times a softer picture. Only games whose resolution control the app can hold offer it (NieR:Automata, Ocarina of Time).
+
+### Upscaling preset
+
+Named render scales, as DLSS names them: Quality draws the 3D at 67 % of its size, Balanced at 58 %, Performance at 50 %, and the game's upscaler (MetalFX when the Game's upscaler is set to it) brings the picture back to full size. Custom, the default, uses the Render scale below instead. The upscaler here is spatial: it works from one frame, so a preset is about as sharp as the same render scale, not as sharp as DLSS at the same name. A lower preset saves GPU time and some memory.
 
 ### Render scale
 
@@ -297,6 +301,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Setting | Variable | Values |
 |---|---|---|
 | Frame rate | `DM_FPS_TARGET` | `30`, `60`, `120` (Mac, games with `fps_max 120`) |
+| Upscaling preset | `DM_UPSCALE_PRESET` | `custom`, `quality`, `balanced`, `performance` |
 | Render scale | `DM_RENDER_SCALE` | `0.5` to `1.0` |
 | Console mode | `DM_OPMODE` | `1` docked, `0` handheld |
 | Game language | `DM_LANG` | a language code, such as `ja` |
