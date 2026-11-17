@@ -30,24 +30,37 @@ On my own Mac I also use hotoni's Xbox-Buttons mod (GameBanana, CC BY-NC-ND) for
 
 ## Community front ends
 
-Community projects build on nxnative with tools to turn your games into apps for your iPhone, iPad or Mac without the command line, and libraries to organize and launch them. They are separate projects: questions and bugs about them go to their own pages.
+Community projects build on nxnative with tools to turn your games into Mac apps without the command line, and libraries to organize and launch them. They are separate projects: questions and bugs about them go to their own pages.
 
 - [Hermit](https://github.com/azmasm/hermit) (formerly switch2mac) — Mac app that builds and installs games from your dump, with a game library and a pick of builds per game; what I use to build this one ([how](#or-do-it-like-i-did-build-it-with-hermit)).
-- [NX2Apple](https://github.com/LNPANDY/NX2Apple) — Mac builder with a shared iPhone/iPad game library.
+- [NX2Apple](https://github.com/LNPANDY/NX2Apple) — Mac builder with a shared game library.
 - [NX Play](https://github.com/varyform/nx-native-wrapper) — Mac library with device installs and save sync.
 - [NxNative Launcher](https://github.com/rennan101/nxnative_Launcher) — Mac launcher with guided builds and controller mapping.
-- [LumaNX](https://github.com/Xc1Ym/LumaNX) — Mac game builder with IPA export.
-- [GameCase](https://github.com/Tiaoge-tou/GameCase) — iOS game library based on LiveContainer.
+- [LumaNX](https://github.com/Xc1Ym/LumaNX) — Mac game builder.
 
 ## Requirements
 
-- **Mac:** Apple silicon, macOS 26.6 or later. Building games requires Xcode 27.2.
-- **iPhone:** A17 Pro chip or later, with iOS 26 or later.
-- **iPad:** M1 chip or later, with iPadOS 26 or later.
+This build is made for one Mac, mine, and that is the only one it has been played on:
 
-The games' textures are BC-compressed, which older iPhones cannot read. Switch 2 builds are tested on the Mac; check each game's note for device-specific validation.
+| | My Mac |
+|---|---|
+| Model | MacBook Air (Mac17,3) |
+| Chip | Apple M5: 10-core CPU (4 performance, 6 efficiency), 8-core GPU, Metal 4 |
+| Memory | 16 GB |
+| Display | Built-in, 2560 x 1664 |
+| macOS | 27.2.1 |
+| Build tools | Xcode 27.2 with its Metal Toolchain, .NET SDK 10.0.403, Python 3.15 |
 
-For a game without a profile, the script writes a survey and tries a provisional build with guessed settings. That build may not start; see [Port another game](docs/development.md#port-another-game).
+What you need to build and play it:
+
+- **An Apple silicon Mac.** Other M-series chips should work, but I have not tried them. Hermit itself needs macOS 26 or later.
+- **16 GB of memory or more.** 16 GB is what this branch is tuned for: its memory settings aim to keep the game under about 13 GB, and its watchdog starts freeing memory at 11 GB. Quit other apps (browsers especially) before you play. More memory gives it room to spare.
+- **About 110 GB of free disk for the first build.** On my Mac: the dump is 24 GB, Hermit's build folder 50 GB and the finished app 36 GB.
+- **Your own dump** of The Legend of Zelda: Ocarina of Time for Switch 2 with update v131072: a folder with `base/` and `updates/131072/`, or a `.nup`. A Switch 2 game needs no keys.
+- **Xcode, its Metal Toolchain and the .NET 10 SDK.** Hermit's setup checks for them and tells you what is missing.
+- **A controller** (Xbox, PlayStation or Switch Pro) or the keyboard. The mouse does nothing in this build.
+
+I play at the Quality upscaling preset (render scale 0.67) with sharpening at 0.3.
 
 ## How to play
 
@@ -55,7 +68,7 @@ Switch 2 games are built from one `.nup` file or a folder of their files, not fr
 
 ### Build from the command line
 
-You need a Mac with macOS 26.6 or later, [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2) 27.2, [Homebrew](https://brew.sh) and Python 3.12 or newer (an arm64 one, not an Intel Homebrew's). An iPhone build also needs Xcode's iOS platform (Xcode → Settings → Components).
+You need a Mac with macOS 26.6 or later, [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2) 27.2, [Homebrew](https://brew.sh) and Python 3.12 or newer (an arm64 one, not an Intel Homebrew's).
 
 The shaders are built with Xcode 27.2's Metal compiler. Select it before step 1: `sudo xcode-select -s /Applications/Xcode.app`. With several Xcode versions installed, name this one `Xcode-27.2.app` and select it with `sudo xcode-select -s /Applications/Xcode-27.2.app`.
 
@@ -80,12 +93,10 @@ python3 -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; 
 **3. Build**, with your game folder and your `prod.keys`:
 
 ```
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
+python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --platform mac-app
 ```
 
-The IPA appears in the game's folder. The first build takes 30–60 minutes and needs free disk space of about twice the game's size plus 10 GB; building again is much faster.
-
-To play on the Mac instead, add `--platform mac-app`: you get a Mac app of the game to open from Finder. All options: [The packing script in detail](docs/development.md#the-packing-script-in-detail).
+You get a Mac app of the game to open from Finder. The first build takes 30–60 minutes and needs free disk space of about twice the game's size plus 10 GB; building again is much faster. All options: [The packing script in detail](docs/development.md#the-packing-script-in-detail).
 
 ### Or do it like I did: build it with Hermit
 
@@ -113,17 +124,9 @@ git clone https://github.com/azmasm/hermit.git && cd hermit
 ./hermit.py install
 ```
 
-### Install
-
-Install the IPA on your iPhone or iPad with a sideloading tool such as AltStore, Sideloadly or LiveContainer. If your tool offers **Increased Memory Limit**, turn it on: the bigger games need it.
-
-Game too big to install? Build again with `--romfs separate`, and run the command the script prints once to copy the game files to your phone ([Quick reinstalls](docs/development.md#quick-reinstalls)). With AltServer, also add `--shader-files`: it cannot install a file of 2 GiB or more.
-
-Controls, saves and settings: [Playing](docs/playing.md).
-
 ### Switch 2 games
 
-A Switch 2 game is built from one [NUP](https://github.com/a55uka/nup) container (a `.nup` file) or a folder of its files, not from NSPs. Neither needs `prod.keys`. A game this project has no profile for is surveyed and gets a provisional profile, as NSPs do ([Port another game](docs/development.md#port-another-game)), which may not boot. You get a Mac app; iPhone and iPad are untested.
+A Switch 2 game is built from one [NUP](https://github.com/a55uka/nup) container (a `.nup` file) or a folder of its files, not from NSPs. Neither needs `prod.keys`. A game this project has no profile for is surveyed and gets a provisional profile, as NSPs do ([Port another game](docs/development.md#port-another-game)), which may not boot. You get a Mac app.
 
 **From a `.nup` file**, which holds the base game, its updates and DLC in one file. Give the file, or a folder that holds it:
 
@@ -154,7 +157,7 @@ An update's folder alone will do (no `base/`), and so will `exefs/` and `romfs/`
 
 ## Discussions
 
-Questions, how a game runs on your Mac or iPhone, and ideas go in [Discussions](https://github.com/seedds/nxnative/discussions); [Issues](https://github.com/seedds/nxnative/issues) are for bugs, with the log. Ocarina of Time's performance (frame rate, resolution, which Macs hold 60 fps) is followed in [Ocarina of Time: state on main](https://github.com/seedds/nxnative/discussions/1789).
+Questions, how a game runs on your Mac, and ideas go in [Discussions](https://github.com/seedds/nxnative/discussions); [Issues](https://github.com/seedds/nxnative/issues) are for bugs, with the log. Ocarina of Time's performance (frame rate, resolution, which Macs hold 60 fps) is followed in [Ocarina of Time: state on main](https://github.com/seedds/nxnative/discussions/1789).
 
 ## For developers
 
@@ -164,7 +167,7 @@ Questions, how a game runs on your Mac or iPhone, and ideas go in [Discussions](
 
 This project is built on other people's work ([licenses](dm/third_party/README.md)):
 
-- **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
+- **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, and the NVN-on-Metal layer. Fixes go both ways.
 - **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, in `dm/third_party/ryujinx` with a few fixes listed in [its README](dm/third_party/ryujinx/README.md)) turns the games' shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).
 - **[LibHac](https://github.com/Thealexbarney/LibHac)**: reads NSPs and layers updates over the base game in `dm/tools/nx_extract`.
