@@ -28,28 +28,11 @@ The details, measurements and what is still open are in the [game's note](dm/gam
 
 On my own Mac I also use hotoni's Xbox-Buttons mod (GameBanana, CC BY-NC-ND) for the button icons. It is not included here.
 
-## Games
-
-The full [tested games table](dm/games/README.md#games) includes original Switch games, tested builds, engines and graphics APIs. Each game's note records its tested platforms, progress and known issues.
-
-These Switch 2 games have passed Mac gameplay testing. Build them from a [`.nup` file or a dump folder](#switch-2-games):
-
-- [Donkey Kong Bananza](dm/games/040074A01BF12000/README.md)
-- [Fire Emblem Fortune's Weave](dm/games/04007EF01F8AE000/README.md) — up to 120 fps
-- [Hyrule Warriors: Age of Imprisonment](dm/games/04003F40232DE000/README.md)
-- [Kirby Air Riders](dm/games/040077201BE50000/README.md)
-- [Mario Kart World](dm/games/0400C3F00006E000/README.md)
-- [Mario Tennis Fever](dm/games/0400D4201C6EA000/README.md)
-- [Pokémon Pokopia](dm/games/0400A3A01EE4C000/README.md)
-- [Splatoon Raiders](dm/games/0400380020056000/README.md)
-- [Star Fox](dm/games/0400E88025B1A000/README.md)
-- [The Legend of Zelda: Ocarina of Time](dm/games/0400486024DEC000/README.md)
-- [Yoshi and the Mysterious Book](dm/games/0400245021D2C000/README.md)
-
 ## Community front ends
 
 Community projects build on nxnative with tools to turn your games into apps for your iPhone, iPad or Mac without the command line, and libraries to organize and launch them. They are separate projects: questions and bugs about them go to their own pages.
 
+- [Hermit](https://github.com/azmasm/hermit) (formerly switch2mac) — Mac app that builds and installs games from your dump, with a game library and a pick of builds per game; what I use to build this one ([how](#or-do-it-like-i-did-build-it-with-hermit)).
 - [NX2Apple](https://github.com/LNPANDY/NX2Apple) — Mac builder with a shared iPhone/iPad game library.
 - [NX Play](https://github.com/varyform/nx-native-wrapper) — Mac library with device installs and save sync.
 - [NxNative Launcher](https://github.com/rennan101/nxnative_Launcher) — Mac launcher with guided builds and controller mapping.
