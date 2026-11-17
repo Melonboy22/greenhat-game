@@ -11029,7 +11029,9 @@ static void pool_seen_scan(void) {
 }
 // A table replaced by a new walk is reused once the submission that may read it has completed, the last segment's fence covering every segment before it: a new buffer each time meant an allocation, a residency add and remove, and a kernel call or more each way,
 // about 3 a frame in Ocarina of Time. Sizes round up to 64 KB, as a pool grows by a few IDs at a time. What cannot be used again soon leaves when the spares are full (the idea is from PR 1428)
-enum { POOL_SPARES = 16 };
+// From kid-with-sword-remake FF10: Ocarina of Time patches about 16 tables a frame, and a table given back is free only two or three frames on, so with 16 spares nearly every patch
+// made a new buffer and a residency commit (about 8 % of the replay thread on an M5 at 30 fps). 64 hold four frames of them, about 21 MB of its 320 KB tables
+enum { POOL_SPARES = 64 };
 static struct { __strong id<MTLBuffer> buf; uint64_t fence; } g_pool_spare[POOL_SPARES]; static int g_npool_spare; static uint64_t g_pool_made, g_pool_reused;
 static id<MTLBuffer> pool_table_take(size_t need) {
     size_t len = (need + 0xffff) & ~(size_t)0xffff; uint64_t done = g_done;
