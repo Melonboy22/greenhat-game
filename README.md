@@ -22,6 +22,20 @@ The details, measurements and what is still open are in the [game's note](dm/gam
 
 **License:** MIT, Copyright (c) 2026 seedds, as in the original project. Changes here are made by Melonboy22 with Claude (Anthropic). No game files are included: you need your own copy of the game. Not affiliated with Nintendo.
 
+**Where the pieces come from:**
+
+| Project | What this build took from it |
+|---|---|
+| [seedds/nxnative](https://github.com/seedds/nxnative) (MIT) | The engine everything runs on. Four of its open pull requests are merged here: #2226 (holes in Hyrule Castle's flower bushes), #2249 (stale draw state), #2230 (a buffer check) and #2241 (frame generation). |
+| [Fasen24-AI/swordboiMacNative](https://github.com/Fasen24-AI/swordboiMacNative) (MIT) | The base: this build starts from its commit `d57562fc`, with its lighting, terrain, GPU memory guard and Castle Town memory fixes. |
+| [cheemu21/kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake) (MIT) | The memory savers, ported to the swordboi base: smaller copies of large textures (`tex_soft`), the retired-texture shortcut (`pool_skip_retired`), lossy render targets (`rt_lossy`) and the pool-pinning settings (`gmem_skip`, `gmem_nobig`). Its frame generation came in through #2241. This repository is a fork of it. |
+| [ly05010419/MacNativeGames](https://github.com/ly05010419/MacNativeGames) (MIT) | Reviewed for Ocarina of Time fixes. It runs the game on a different engine, so no code was taken. |
+| [PranavDupati/ninboy-hat-for-macos](https://github.com/PranavDupati/ninboy-hat-for-macos) (MIT) | Reviewed. A keyboard and mouse mode was adapted from it; it is off by default and not working yet. Its modified game asset was left out. |
+| [azmasm/hermit](https://github.com/azmasm/hermit) (formerly switch2mac) | The app that builds and launches this build. Nothing from it is in this repository. |
+| Hookshot by NotRexed (GPL-3.0) | The idea of frame generation for this game, through kid-with-sword-remake. No code was taken. |
+
+On my own Mac I also use hotoni's Xbox-Buttons mod (GameBanana, CC BY-NC-ND) for the button icons. It is not included here.
+
 ## This fork: swordboiMacNative
 
 This is [nxnative](https://github.com/seedds/nxnative) with one game in mind, The Legend of Zelda: Ocarina of Time (Switch 2, `0400486024DEC000` v131072) as a Mac app, built and played on an Apple silicon Mac. What is here is source code. There is no app to download and nothing from the game is in this repository, as upstream: you build the app yourself, from your own dump.
