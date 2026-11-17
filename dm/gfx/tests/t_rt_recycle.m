@@ -42,7 +42,12 @@ int main(void) { @autoreleasepool {
     mtl_sub_begin();
     if (!sw_on(rh_mode())) {   // DM_NVN_RT_RECYCLE=0
         tex_t a = target(&pool, 95001, 0, 640, 360); mtl_tex_init(&a);
-        CHECK(tex_mtl(&a) && !tex_mtl(&a).heap && g_rh_made == 0, "with the switch off a target is its own allocation");
+        // oot-plus: the recycler is off by default and a GPU-only pool's own heap (pool_heap_texture, #1453, DM_NVN_POOL_HEAP) takes the target first
+        const char *ph_e = getenv("DM_NVN_POOL_HEAP"); int ph = !ph_e || atoi(ph_e);
+        id<MTLTexture> ta = tex_mtl(&a); NvImageHeap *ho = ta ? objc_getAssociatedObject(ta, &g_image_heap_owner_key) : nil;
+        CHECK(ta && g_rh_made == 0 && (ph ? ta.heap && ho && ho->pool_heap : !ta.heap),
+              ph ? "with the recycler off (the default) a target is placed in its pool's own heap, no recycled one" : "with the recycler and the pool heaps off a target is its own allocation");
+        ta = nil;
         mtl_tex_release(&a); mtl_alias_drop_pool(&pool); settle();
         printf("t_rt_recycle (off): %d checks, %d failed\n", checks, failed); return failed != 0;
     }

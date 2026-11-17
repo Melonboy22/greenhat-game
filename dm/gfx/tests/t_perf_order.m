@@ -150,7 +150,10 @@ static void hoists(id<MTLLibrary> lib) {
         if(hazard) { uint32_t bits=~0u; emit(&c,OP_BARRIER,&bits,sizeof bits); }
         p_dispatch d={.x=1,.y=1,.z=1}; emit(&c,OP_DISPATCH,&d,sizeof d); triangle(&c);
         uint64_t before=g_csh_moved; execute(&c);
-        CHECK(hazard?"explicit game barrier prevents hoist":"independent dispatch hoisted once",g_csh_moved-before==(cshoist_on() && !hazard));
+        // A game barrier between the draws stops the hoist only with DM_NVN_CSH_BARRIER=0: by default the scan goes past it, as the draws before it write no memory the dispatch
+        // touches (cs_hoist_try says why; Ocarina of Time puts about 70 a frame in its scene passes). This test's draw reads nothing the dispatch writes, so it moves either way but there
+        CHECK(!hazard?"independent dispatch hoisted once":csh_bar_pass()?"a dispatch independent of the draws before it moves past a game barrier":"explicit game barrier prevents hoist (DM_NVN_CSH_BARRIER=0)",
+              g_csh_moved-before==(cshoist_on() && (!hazard || csh_bar_pass())));
         CHECK("compute writes expected shared memory",*(uint32_t *)mem==73);
     }
     // Drive the production scanner with stencil writes and a stencil-only read.

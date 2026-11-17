@@ -40,23 +40,26 @@ int main(int argc, char **argv) { @autoreleasepool {
         sys(1); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap - 10, cap); dm_mem_watchdog(cap + 400, cap); dm_mem_watchdog(cap + 400, cap);
         CHECK("over, short, but never three checks in a row: no stop", !stops);
         dm_mem_watchdog(cap + 400, 0); CHECK("a cap of 0 turns it off", !stops);
-        // The relief on the submit thread: guard_act takes the request and trims the ring to an eighth of its floor
-        setenv("DM_NVN_GHOST_TRIM_MIN", "1024", 1); mtl_init(); sys(0);
+        // The relief on the submit thread: guard_act takes the request and lets the ghost table's idle entries go, the floor's too, down to 64
+        mtl_init(); sys(0);
         MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:16 height:16 mipmapped:NO]; d.storageMode = MTLStorageModePrivate;
-        atomic_store(&g_cur_frame, 100000);   // packaged textures idle since frame 0: what the relief may let go (ghost_restorable)
+        atomic_store(&g_cur_frame, 100000);
         for (uint64_t i = 0; i < 1500; i++) { NvPkg *pk = [NvPkg new]; pk->tex = [g_dev newTextureWithDescriptor:d]; res_add(pk->tex); tex_put(8000000 + i, pk); }
+        CHECK("entries just put are in use: all stay", g_ghost.n == 1500);
+        atomic_store(&g_cur_frame, 100000 + GHOST_IDLE);   // idle now
         mtl_mem_relief(); guard_act(0);
-        CHECK("guard_act carries out the relief: the ring down to an eighth of its floor (128)", g_ghost.n == 128 && !relief());
+        CHECK("guard_act carries out the relief: the idle entries down to 64", g_ghost.n == 64 && !relief());
         // Through a submission with the guard at no level, as when the system has memory to give: the submit thread calls guard_act for the relief alone
         for (uint64_t i = 0; i < 1500; i++) { NvPkg *pk = [NvPkg new]; pk->tex = [g_dev newTextureWithDescriptor:d]; res_add(pk->tex); tex_put(8100000 + i, pk); }
+        atomic_store(&g_cur_frame, 100000 + 2 * GHOST_IDLE);
         atomic_store(&g_guard_lv, GUARD_OK); mtl_mem_relief();
         mtl_sub_begin(); CHECK("the submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
-        CHECK("a submission with the guard calm carries out the relief", g_ghost.n == 128 && !relief());
-        // The soft level, through a real submission with the guard at no level: the watchdog asks, the submit thread carries it out
+        CHECK("a submission with the guard calm carries out the relief", g_ghost.n == 64 && !relief());
+        // The soft level, through a real submission with the guard at no level: the watchdog asks, the submit thread carries it out, and the entries in use stay
         for (uint64_t i = 0; i < 1500; i++) { NvPkg *pk = [NvPkg new]; pk->tex = [g_dev newTextureWithDescriptor:d]; res_add(pk->tex); tex_put(8200000 + i, pk); }
         atomic_store(&g_guard_lv, GUARD_OK); dm_mem_watchdog(cap - 500, cap);
         mtl_sub_begin(); CHECK("the submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
-        CHECK("the soft level's relief is carried out by a submission, with no stop, and leaves the ring alone (its textures came back at once: 12-23 fps in Castle Town)", g_ghost.n == 128 + 1500 && !relief() && !stops);
+        CHECK("the soft level's relief is carried out by a submission, with no stop, and leaves the entries in use (its textures came back at once: 12-23 fps in Castle Town)", g_ghost.n == 1500 && !relief() && !stops);
         mtl_mem_relief_soft(); mtl_mem_relief(); CHECK("a hard request is not downgraded by a soft one before it is taken", atomic_load(&g_relief_req) == 1);
         mtl_mem_relief_soft(); CHECK("nor a pending hard one by a later soft one", atomic_load(&g_relief_req) == 1);
         atomic_store(&g_relief_req, 0);

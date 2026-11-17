@@ -253,10 +253,11 @@ static void handover_holders(void) {
     CHECK(resident(ta), "hand-over: the package's release leaves the texture resident for its serials");
     h_nvnTextureFinalize(&a); settle();
     CHECK(resident(ta), "hand-over: one serial's release leaves it resident for the other");
-    tex_put(sa, ta);   // a record of the finalized object replayed: its serial resolves through the ghost ring
+    tex_put(sa, ta);   // a record of the finalized object replayed: its serial resolves through the ghost table
     h_nvnTextureFinalize(&b); settle();
-    CHECK(resident(ta), "hand-over: a finalized serial in the ghost ring keeps it resident");
-    for (uint64_t i = 0; i < NGHOST; i++) tex_put((1ull << 61) + i, [NSObject new]);   // the ring evicts that entry
+    CHECK(resident(ta), "hand-over: a finalized serial in the ghost table keeps it resident");
+    atomic_fetch_add(&g_cur_frame, GHOST_IDLE_KEPT + 1);   // idle long enough for a texture the GPU wrote: the table lets that entry go
+    pthread_mutex_lock(&g_smu); ghost_trim_locked(1000, 0); pthread_mutex_unlock(&g_smu);
     settle();
     pthread_mutex_lock(&g_smu); int left = g_retire_held.n; pthread_mutex_unlock(&g_smu);
     CHECK(!resident(ta) && !left, "hand-over: the last holder's release takes it out of the residency set");

@@ -8,6 +8,7 @@ uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
 #define CHECK(c, label) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", label); } } while (0)
 int main(void) { @autoreleasepool {
+    setenv("DM_NVN_POOL_SKIP_RETIRED", "0", 1);   // the host's own rule for retired IDs, whatever the profile sets (pool_skip_retired gives an unread one the dummy, as t_pool_notes says)
     mtl_init(); mtl_sub_begin();
     tex_t a = {.magic=MAGIC('T','E','X',0), .serial=99301};
     a.d = (nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_RGBA8, .width=4, .height=4, .depth=1, .levels=1, .samples=1};

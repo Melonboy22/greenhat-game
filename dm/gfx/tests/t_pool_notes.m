@@ -131,11 +131,16 @@ int main(void) { @autoreleasepool {
     builds = g_stat_pool_builds; uint64_t taken = g_alias_taken, ep = g_treg_ep;
     id<MTLBuffer> b10 = table();
     CHECK(g_alias_taken > taken, "texture 5 took the storage over");
-    CHECK(g_stat_pool_builds == builds && entry(b10, 5) != dummy_of(b10) && entry(b10, 4) == entry(b9, 4), "the takeover builds no table, and ID 4 keeps its entry in that submission");
+    // oot-plus: a texture that leaves the sharing table takes the finalized serials that still resolve to it (ghost_purge, DM_NVN_GHOST_TAKEOVER, on by default: render targets the
+    // game let go held 3-4 GB in Castle Town), so ID 4's serial resolves anew, to nothing, as its storage is texture 5's now; with the purge off ID 4 keeps the old texture
+    const char *gt = getenv("DM_NVN_GHOST_TAKEOVER"); int purge = !gt || atoi(gt) > 0;
+    CHECK(g_stat_pool_builds == builds && entry(b10, 5) != dummy_of(b10) && (purge ? entry(b10, 4) == dummy_of(b10) && g_ghost_purged : entry(b10, 4) == entry(b9, 4)),
+          purge ? "the takeover builds no table, and ID 4's finalized serial goes with the texture it named (an empty slot)" : "the takeover builds no table, and ID 4 keeps its entry in that submission");
     CHECK(g_treg_ep == ep, "nor sends every texture ID down the slow path");
     CHECK(!g_treg[4].view, "ID 4's view went at the submission's end");
     id<MTLBuffer> b11 = table();
-    CHECK(g_stat_pool_builds == builds && entry(b11, 4) != dummy_of(b11), "the next submission takes ID 4 again without building the table");
+    CHECK(g_stat_pool_builds == builds && (purge ? entry(b11, 4) == dummy_of(b11) : entry(b11, 4) != dummy_of(b11)),
+          purge ? "the next submission builds no table, and ID 4 stays empty" : "the next submission takes ID 4 again without building the table");
     same_as_whole(b11, "the patched table holds what a table built whole does (takeover)");
 
     // Past the budget: a texture registered since the walk that no shader has read is not made, as in a walk (its entry is its stand-in, or the dummy with DM_NVN_POOL_STANDIN=0), and the table is patched rather than built whole. ID 6 names a

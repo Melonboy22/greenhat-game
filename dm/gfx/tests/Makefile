@@ -123,6 +123,7 @@ check_t_perf_order: t_perf_order
 	MTL_DEBUG_LAYER=1 ./t_perf_order
 	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_perf_order
 	DM_NVN_FAST_WAKE=0 DM_NVN_SLICE_MERGE=0 DM_NVN_CS_HOIST=0 MTL_DEBUG_LAYER=1 ./t_perf_order
+	DM_NVN_CSH_BARRIER=0 MTL_DEBUG_LAYER=1 ./t_perf_order
 t_link_ticks: t_link_ticks.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_link_ticks.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 t_cpu_tex: t_cpu_tex.m $(MTL_T_DEP)
@@ -204,7 +205,10 @@ check_t_gmem_words: t_gmem_words
 	MTL_DEBUG_LAYER=1 ./t_gmem_words
 t_pool_notes: t_pool_notes.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_notes.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
-check_t_pool_notes: RUN_ENV = MTL_DEBUG_LAYER=1
+.PHONY: check_t_pool_notes
+check_t_pool_notes: t_pool_notes
+	MTL_DEBUG_LAYER=1 ./t_pool_notes
+	DM_NVN_GHOST_TAKEOVER=0 MTL_DEBUG_LAYER=1 ./t_pool_notes
 t_sparse_tiles: t_sparse_tiles.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_sparse_tiles.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 t_readback: t_readback.m $(MTL_T_DEP)
@@ -331,12 +335,26 @@ check_t_mem_watchdog: t_mem_watchdog
 	./t_mem_watchdog low
 	./t_mem_watchdog runaway
 	./t_mem_watchdog nosoft
+t_pool_finalize: t_pool_finalize.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_finalize.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_pool_finalize
+check_t_pool_finalize: t_pool_finalize
+	MTL_DEBUG_LAYER=1 ./t_pool_finalize
+# Per-frame arena blocks: shared between submissions, released above the keep count once idle, never while a pending submission holds them (t_arena_trim.m, from upstream 3fe574df)
+t_arena_trim: t_arena_trim.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_arena_trim.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_arena_trim
+check_t_arena_trim: t_arena_trim
+	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_arena_trim
+	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_arena_trim
+	DM_NVN_ARENA_TRIM=0 MTL_DEBUG_LAYER=1 ./t_arena_trim
+	DM_NVN_ARENA_SHARE=0 MTL_DEBUG_LAYER=1 ./t_arena_trim
 t_ghost_trim: t_ghost_trim.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_ghost_trim.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_ghost_trim
 check_t_ghost_trim: t_ghost_trim
 	MTL_DEBUG_LAYER=1 ./t_ghost_trim
-	MTL_DEBUG_LAYER=1 ./t_ghost_trim --off
+	MTL_DEBUG_LAYER=1 ./t_ghost_trim --floor
 t_tex_soft: t_tex_soft.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_tex_soft.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_tex_soft
@@ -551,9 +569,10 @@ t_rt_recycle: t_rt_recycle.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_rt_recycle.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_rt_recycle
 check_t_rt_recycle: t_rt_recycle
-	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_rt_recycle
-	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_rt_recycle
-	DM_NVN_RT_RECYCLE=0 MTL_DEBUG_LAYER=1 ./t_rt_recycle
+	DM_NVN_RT_RECYCLE=1 DM_NVN_POOL_HEAP=0 DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_rt_recycle
+	DM_NVN_RT_RECYCLE=1 DM_NVN_POOL_HEAP=0 DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_rt_recycle
+	MTL_DEBUG_LAYER=1 ./t_rt_recycle
+	DM_NVN_RT_RECYCLE=0 DM_NVN_POOL_HEAP=0 MTL_DEBUG_LAYER=1 ./t_rt_recycle
 # A game's upscaler drawn by MetalFX (any profile; the profile's upscaler shaders, from its shader map, when it has some); with and without the switch, and on the encoding thread
 t_upscaler_mfx: t_upscaler_mfx.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upscaler_mfx.m $(MTL_T_SRC) $(FW)
