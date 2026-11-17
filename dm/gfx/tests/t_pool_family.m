@@ -1,7 +1,8 @@
 // Render targets of a GPU-only pool whose offsets have held more than one size (a resolution family; Ocarina of Time's render-target pools, which move their targets every frame):
-// they go into the pool's own heap (pool_heap_texture), every size at an offset at the same place, one memory as on NVN, written uncompressed as a family's members are. Before
+// they go into the pool's own heap (pool_heap_texture), every size at an offset at the same place, one memory as on NVN, compressed (uncompressed with
+// DM_NVN_POOL_FAMILY_NOCOMPRESS=1, mode "nocomp": uncompressed they cost Ocarina of Time 5 ms of GPU time a frame). Before
 // (oot-plus until 2026-11-18) image_texture took them first and gave each offset a heap of its own beside the pool's heap: about 490 heaps, 0.4-2.5 GB, on a 16 GB M5 docked.
-// A virtual pool (no pool heap) and DM_NVN_POOL_HEAP=0 keep the family heaps; a texture of no family keeps its compression. Modes: (none), "off" (DM_NVN_POOL_HEAP=0)
+// A virtual pool (no pool heap) and DM_NVN_POOL_HEAP=0 keep the family heaps; a texture of no family keeps its compression. Modes: (none), "off" (DM_NVN_POOL_HEAP=0), "nocomp"
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -18,8 +19,9 @@ static tex_t target(pool_t *pool, uint64_t serial, uint64_t off, unsigned w, uns
 static NvImageHeap *owner_of(id<MTLTexture> t) { return t ? objc_getAssociatedObject(t, &g_image_heap_owner_key) : nil; }
 
 int main(int argc, char **argv) { @autoreleasepool {
-    int off = argc > 1 && !strcmp(argv[1], "off");
+    int off = argc > 1 && !strcmp(argv[1], "off"), nocomp = argc > 1 && !strcmp(argv[1], "nocomp");
     if (off) setenv("DM_NVN_POOL_HEAP", "0", 1);
+    if (nocomp) setenv("DM_NVN_POOL_FAMILY_NOCOMPRESS", "1", 1);
     mtl_init(); mtl_sub_begin();
     enum { POOL = 256 << 20, SLOT = 16 << 20, N = 12 };
     void *mem = NULL; if (posix_memalign(&mem, 16384, POOL)) return 1; memset(mem, 0, POOL);
@@ -45,7 +47,8 @@ int main(int argc, char **argv) { @autoreleasepool {
         CHECK(in_pool == N && !in_family, "every family member goes into the pool's heap");
         CHECK(g_image_heap_n == heaps0 && atomic_load(&g_family_heap_live) == fam0, "no heap is made beside the pool's");
         CHECK(same_place == N, "both sizes at an offset lie at the same place in the pool's heap: one memory");
-        CHECK(uncompressed == N, "a family's members are written uncompressed (DM_NVN_FAMILY_NOCOMPRESS)");
+        if (nocomp) CHECK(uncompressed == N, "DM_NVN_POOL_FAMILY_NOCOMPRESS=1: a family's members are written uncompressed");
+        else CHECK(uncompressed == 0, "a family's members keep the GPU's compression (DM_NVN_POOL_FAMILY_NOCOMPRESS unset)");
         CHECK(atomic_load(&g_pool_heap_live) >= (uint64_t)POOL, "the pool's heap is counted alive");
     } else {
         CHECK(!in_pool && in_family == N, "with the pool heaps off, families keep heaps of their own");
@@ -58,6 +61,6 @@ int main(int argc, char **argv) { @autoreleasepool {
     id<MTLTexture> tva = tex_mtl(&va), tvb = tex_mtl(&vb); NvImageHeap *hva = owner_of(tva);
     CHECK(tva && hva && !hva->pool_heap && tvb && tvb.heap == tva.heap, "a virtual pool's family shares a family heap, as before");
     mtl_sub_commit(); mtl_drain();
-    printf("t_pool_family%s: %d checks, %d failed\n", off ? " (off)" : "", checks, failed);
+    printf("t_pool_family%s: %d checks, %d failed\n", off ? " (off)" : nocomp ? " (nocomp)" : "", checks, failed);
     return failed != 0;
 }}

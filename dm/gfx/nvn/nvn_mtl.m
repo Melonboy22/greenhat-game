@@ -4901,9 +4901,12 @@ static id<MTLTexture> pool_heap_texture(const tex_t *t, MTLTextureDescriptor *d)
     uint64_t lo = (uint64_t)((double)t->off * POOL_HEAP_SCALE), hi = (uint64_t)((double)((uint64_t)t->off + t->L.size) * POOL_HEAP_SCALE);
     uint64_t at = (lo + need.align - 1) / need.align * need.align;
     if (at + need.size > hi) { g_pool_heap_unfit++; return nil; }
-    // A resolution family in the pool's heap (another description at this offset and format, another size): written uncompressed, as image_texture writes a family's members
-    // (DM_NVN_FAMILY_NOCOMPRESS), so a size that reads what another wrote finds misplaced texels of its format rather than another size's compressed blocks (ASTRAL CHAIN's glow)
-    static int nocomp = -1; if (nocomp < 0) { const char *e = getenv("DM_NVN_FAMILY_NOCOMPRESS"); nocomp = !(e && !strcmp(e, "0")); }
+    // A resolution family in the pool's heap (another description at this offset and format, another size) keeps the GPU's lossless compression unless
+    // DM_NVN_POOL_FAMILY_NOCOMPRESS=1, which writes it uncompressed as image_texture writes a family heap's members (DM_NVN_FAMILY_NOCOMPRESS), so a size that reads what another
+    // wrote finds misplaced texels of its format rather than another size's compressed blocks (ASTRAL CHAIN's glow). Off by default: Ocarina of Time's render-target pools move
+    // their targets every frame, so nearly every target is a family's, and uncompressed they cost the GPU 13.4 -> 18.9 ms a frame and the submit thread 10.7 -> 16.7 ms (16 GB
+    // M5, docked, 1440p, 412a2fef against 9a152ea8, 2026-11-18): 30-35 fps. Before 412a2fef such a target took the pool's heap compressed once an earlier size there had taken it
+    static int nocomp = -1; if (nocomp < 0) { const char *e = getenv("DM_NVN_POOL_FAMILY_NOCOMPRESS"); nocomp = e && atoi(e) > 0; }
     int family = 0;
     pthread_mutex_lock(&g_smu);
     if (nocomp && image_shape(t) && d.allowGPUOptimizedContents) {
