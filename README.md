@@ -1,16 +1,8 @@
-# nxnative
+# greenhat-game
 
-Play your own Nintendo Switch and Switch 2 games natively on Apple silicon Macs, iPhone and iPad. One script packs your game into a Mac app or an unsigned IPA that you sideload.
+A personal build for playing The Legend of Zelda: Ocarina of Time (Switch 2, v131072) as a native Mac app on my own machine: a MacBook Air M5 with 16 GB of RAM and an 8-core GPU, macOS 27.2. It is built with [Hermit](https://github.com/azmasm/hermit) (formerly switch2mac) from the `oot-plus` branch: see [Or do it like I did: build it with Hermit](#or-do-it-like-i-did-build-it-with-hermit).
 
-It is not an emulator: the game's own code runs directly on the Apple chip, with Switch graphics rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
-
-[Games](#games) · [Community front ends](#community-front-ends) · [Requirements](#requirements) · [How to play](#how-to-play) · [Discussions](#discussions) · [For developers](#for-developers)
-
-## greenhat-game
-
-A personal build for playing The Legend of Zelda: Ocarina of Time (Switch 2, v131072) as a native Mac app on my own machine: a MacBook Air M5 with 16 GB of RAM and an 8-core GPU, macOS 27.2. It is built with [Hermit](https://github.com/azmasm/hermit) (formerly switch2mac) from the `oot-plus` branch.
-
-**Where it comes from:** [seedds/nxnative](https://github.com/seedds/nxnative), through [Fasen24-AI/swordboiMacNative](https://github.com/Fasen24-AI/swordboiMacNative) (the code base this build uses, described below). The repository is a fork of [cheemu21/kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake), and some of its memory savers are ported here.
+**Where it comes from:** built on [seedds/nxnative](https://github.com/seedds/nxnative), through [Fasen24-AI/swordboiMacNative](https://github.com/Fasen24-AI/swordboiMacNative) (the code base this build uses). The repository is a fork of [cheemu21/kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake), and some of its memory savers are ported here.
 
 **What's changed for a 16 GB Mac:**
 - Memory savers: smaller copies of large textures, lossy compression for some render targets, and less of the game's main memory pool pinned for the GPU.
@@ -35,33 +27,6 @@ The details, measurements and what is still open are in the [game's note](dm/gam
 | Hookshot by NotRexed (GPL-3.0) | The idea of frame generation for this game, through kid-with-sword-remake. No code was taken. |
 
 On my own Mac I also use hotoni's Xbox-Buttons mod (GameBanana, CC BY-NC-ND) for the button icons. It is not included here.
-
-## This fork: swordboiMacNative
-
-This is [nxnative](https://github.com/seedds/nxnative) with one game in mind, The Legend of Zelda: Ocarina of Time (Switch 2, `0400486024DEC000` v131072) as a Mac app, built and played on an Apple silicon Mac. What is here is source code. There is no app to download and nothing from the game is in this repository, as upstream: you build the app yourself, from your own dump.
-
-**Building it.** The command is upstream's, with one variable in front of it:
-
-```
-DM_APP_GAME_MODE=1 python3 scripts/build_ipa_from_nsp.py <your .nup> --platform mac-app --work-dir <work> -o "Zelda Ocarina of Time.app"
-```
-
-With `DM_APP_GAME_MODE=1` the app asks macOS for Game Mode, and its launcher hands its own process to the game (`DM_LAUNCH_EXEC`) instead of starting the game as a child and waiting, so Game Mode applies to the game itself. This is the app we play: on our Mac Game Mode turns on with it. Without the variable the same command makes upstream's default, an app that does not ask for Game Mode. The build takes about an hour on an M5 and needs about 80 GB of free disk for its work folder and the app.
-
-**What it carries.** It follows upstream `main` closely (this branch sits on upstream `b54968e7`, 9 Nov 2026) and has, on top of it:
-
-- upstream pull requests that were still open when we needed them, applied with a three-way merge; each commit names the PRs it applies and their authors, whose work it is. Upstream has since merged its own versions of several of them, and the next update of this branch takes those instead. One of them, #2116, keeps an event the game signals from ending the command buffer, which this game does 21 times a frame; upstream merged its own version on 10 Nov;
-- one commit of upstream `main` taken ahead of that update, `fd8188c9`: the submissions of a frame share a command allocator. This game makes 28-37 a frame from a pool of 8, and on our walk the submit thread waited for the GPU 2.5 times a frame; now it does not wait;
-- memory at an area change: render targets the game has let go leave GPU memory with their sharing entry instead of 80 seconds later, and entries nothing looks up are swept every two seconds. The cause and the numbers are in the [game's note](dm/games/0400486024DEC000/README.md#memory);
-- the game's starting settings: handheld, dynamic resolution on, native output and MetalFX for the game's upscaler, instead of docked at full resolution with the game's own. They are what the settings window shows until you change them; a choice you saved before stays yours;
-- the Game Mode build above;
-- a fixed render resolution (`DM_FIXED_RESOLUTION`, `DM_FIXED_SCALE`), a Metal HUD menu item (Window > Metal HUD), the Pro Controller's gyro zero learned at rest, and `DM_NVN_COND_CONSERVATIVE` as an A/B switch for the occlusion conditions.
-
-**Where it stands** (10 Nov 2026, MacBook Pro M5, 24 GB): 60 fps in Hyrule Castle Town on the settings above, about 13 ms of GPU a frame at full screen. The stall at an area change that this page described until today is gone on this Mac. On our scripted walk the game's footprint peaks at 12.3 GB against 14.9 and the GPU's residency set at 8.0 GB against 11.5, and no 300-frame window is over 17.5 ms where ten of thirty-two were, seven of them at 42-69 ms. In the app at full screen with Game Mode on, one run each: no 300-frame window over 20 ms where the worst was 68, the submit thread never waiting for the GPU, the GPU's allocation at its peak 9.3 GB against 10.6. The footprint there is about what it was, 13.6 GB against 13.8: at full screen what is gone is the stall, not the memory. The Mac still reaches its floor of free pages for a moment when the area changes; other areas, interiors and long sessions are not measured yet.
-
-**On a 16 GB Mac.** We do not have one, so what follows is an emulation: 8 GB of the 24 GB Mac held by wired memory that the system can neither compress nor page out ([`dm/tools/mem_ballast.c`](dm/tools/mem_ballast.c)), with the game and everything else living in the 16 GB left. There the same walk completes at 60 fps: footprint 11.4 GB, two 300-frame windows of 55 a little late (17.6 and 24 ms), none slow. Metal's working set and the memory the Mac reports still said 24 GB during it, so take it as a sign and not as a test. Two things to know if you play on 16 GB. Close what else is open: other apps' memory adds to the pressure. And leave the memory guard's margin at its default (`DM_NVN_SYS_MARGIN_MB`, 1,024 MB): with 2,048 MB the guard ended the game after three minutes of the same walk, while it was running at 60 fps. Tell us what you see in this fork's issues; the log has a line every 300 frames with the footprint.
-
-Bugs in what this fork adds go in this fork's issues; everything else belongs to [upstream](https://github.com/seedds/nxnative/issues). The game's note is [dm/games/0400486024DEC000/README.md](dm/games/0400486024DEC000/README.md).
 
 ## Games
 
@@ -138,6 +103,32 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
 The IPA appears in the game's folder. The first build takes 30–60 minutes and needs free disk space of about twice the game's size plus 10 GB; building again is much faster.
 
 To play on the Mac instead, add `--platform mac-app`: you get a Mac app of the game to open from Finder. All options: [The packing script in detail](docs/development.md#the-packing-script-in-detail).
+
+### Or do it like I did: build it with Hermit
+
+[Hermit](https://github.com/azmasm/hermit) (formerly switch2mac) is a Mac app that builds a game from your own dump and installs it in Applications. This is how I build this repository's `oot-plus` branch:
+
+1. **Install Hermit.** Download the latest `Hermit-<version>.pkg` from its [Releases](https://github.com/azmasm/hermit/releases/latest) and open it. It is not signed with a paid Apple Developer ID, so allow it once: System Settings → Privacy & Security → **Open Anyway**.
+2. **Finish its setup.** Hermit checks your Mac and tells you what to install: Xcode (with its Metal Toolchain) and the .NET 10 SDK.
+3. **Choose your game.** Press **+ Build game** and pick your Ocarina of Time dump: a folder with `base/` and `updates/131072/`, or a `.nup` file.
+4. **Point it at this branch.** In the **Build** menu, choose **Your own build…** and paste:
+
+   ```
+   https://github.com/Melonboy22/greenhat-game@oot-plus
+   ```
+
+5. **Build.** Press **Build** and wait: the first build can take hours and needs plenty of free disk. The game lands in Applications. Its first start waits 1-3 minutes with no window while macOS checks the new app: don't open it twice.
+
+Hermit marks a build from your own link as untested. In the game, **1** shows the performance overlay and **2** the settings.
+
+The same from Terminal, with Hermit's script instead of the app:
+
+```bash
+git clone https://github.com/azmasm/hermit.git && cd hermit
+./hermit.py setup
+./hermit.py build "/path/to/your/dump" --custom https://github.com/Melonboy22/greenhat-game@oot-plus --engine custom
+./hermit.py install
+```
 
 ### Install
 
