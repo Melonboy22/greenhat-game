@@ -6,11 +6,21 @@ It is not an emulator: the game's own code runs directly on the Apple chip, with
 
 [Games](#games) · [Community front ends](#community-front-ends) · [Requirements](#requirements) · [How to play](#how-to-play) · [Discussions](#discussions) · [For developers](#for-developers)
 
-## This build: greenhat-game (branch `oot-plus`)
+## greenhat-game
 
-Ocarina of Time for a 16 GB Mac: [swordboiMacNative](https://github.com/Fasen24-AI/swordboiMacNative) (`d57562fc`, described below) with [kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake)'s memory savers (`tex_soft`, `pool_skip_retired`, `rt_lossy`), the game's own 80 % frame by default, upstream pull requests #2226, #2249 and #2230, and opt-in frame generation (#2241, `DM_FRAMEGEN`, off by default). An opt-in keyboard and mouse mode for Ocarina of Time (the launcher's Keyboard and mouse, `DM_KBM=1`; adapted from [ninboy-hat-for-macos](https://github.com/PranavDupati/ninboy-hat-for-macos), MIT): WASD to move, a click in the game captures the mouse for the camera (Escape lets it go), left click sword, right click or Shift shield, middle click or Z to target, Space jump, Return / E / F action, Delete back, Tab pause, M map, 1-4 the D-pad. What each does and how to turn it off is in the [game's note](dm/games/0400486024DEC000/README.md#memory). Not yet played on a 16 GB Mac.
+A personal build for playing The Legend of Zelda: Ocarina of Time (Switch 2, v131072) as a native Mac app on my own machine: a MacBook Air M5 with 16 GB of RAM and an 8-core GPU, macOS 27.2. It is built with switch2mac from the `oot-plus` branch.
 
-**Credits:** the work of swordboiMacNative, kid-with-sword-remake (cheemu21) and the upstream authors whose pull requests each commit names; put together by Melonboy22 with Claude (Anthropic) as a contributor.
+**Where it comes from:** [seedds/nxnative](https://github.com/seedds/nxnative), through [Fasen24-AI/swordboiMacNative](https://github.com/Fasen24-AI/swordboiMacNative) (the code base this build uses, described below). The repository is a fork of [cheemu21/kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake), and some of its memory savers are ported here.
+
+**What's changed for a 16 GB Mac:**
+- Memory savers: smaller copies of large textures, lossy compression for some render targets, and less of the game's main memory pool pinned for the GPU.
+- Memory safety: a gentler GPU memory guard, and a watchdog that frees memory before stopping the game.
+- Fixes: missing or woven ground textures, flower-bush holes, and a few upstream rendering fixes.
+- Extras: Upscaling presets (Quality / Balanced / Performance) and opt-in frame generation.
+
+The details, measurements and what is still open are in the [game's note](dm/games/0400486024DEC000/README.md#memory).
+
+**License:** MIT, Copyright (c) 2026 seedds, as in the original project. Changes here are made by Melonboy22 with Claude (Anthropic). No game files are included: you need your own copy of the game. Not affiliated with Nintendo.
 
 ## This fork: swordboiMacNative
 
