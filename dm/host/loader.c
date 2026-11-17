@@ -354,7 +354,13 @@ void dm_fps_state_apply(void) {
         unsigned w = 0, h = 0; char tail = 0;
         if (sscanf(rz, "%ux%u%c", &w, &h, &tail) != 2 || w * 9 != h * 16 || w < 1280 || w > 3840)
             LOG("[RED] DM_RENDER_SIZE=%s: must be <width>x<height>, 16:9, from 1280x720 to 3840x2160; keeping the game's size", rz);
-        else { wh[0] = w; wh[1] = h; LOG("%s: render size %ux%u (DM_RENDER_SIZE)", g_fps_mod, w, h); }
+        else {
+            // Handheld keeps the game's size: the render-size stubs cover the docked output, while the game crops its handheld picture at a fixed 1920x1080 out of the swapchain, so a
+            // smaller swapchain left that crop outside it and nothing was shown (Ocarina of Time at 1280x720 handheld, 2026-11-17: "present crop out of bounds", a black window)
+            const char *om = getenv("DM_OPMODE"); int handheld = (om ? atoi(om) : DM_GAME_OPMODE) == 0;
+            if (handheld) LOG("%s: render size %ux%u (DM_RENDER_SIZE) not applied in handheld mode: the game's own size is kept", g_fps_mod, w, h);
+            else { wh[0] = w; wh[1] = h; LOG("%s: render size %ux%u (DM_RENDER_SIZE)", g_fps_mod, w, h); }
+        }
     }
     memcpy(dm_fps_state + 0x38, wh, sizeof wh);
     // Screen shape: DM_SCREEN_ASPECT, the screen's width / height between 1.3 and 1.77, makes the builds with screen-shape stubs
