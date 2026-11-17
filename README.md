@@ -8,7 +8,7 @@ It is not an emulator: the game's own code runs directly on the Apple chip, with
 
 ## greenhat-game
 
-A personal build for playing The Legend of Zelda: Ocarina of Time (Switch 2, v131072) as a native Mac app on my own machine: a MacBook Air M5 with 16 GB of RAM and an 8-core GPU, macOS 27.2. It is built with switch2mac from the `oot-plus` branch.
+A personal build for playing The Legend of Zelda: Ocarina of Time (Switch 2, v131072) as a native Mac app on my own machine: a MacBook Air M5 with 16 GB of RAM and an 8-core GPU, macOS 27.2. It is built with [Hermit](https://github.com/azmasm/hermit) (formerly switch2mac) from the `oot-plus` branch.
 
 **Where it comes from:** [seedds/nxnative](https://github.com/seedds/nxnative), through [Fasen24-AI/swordboiMacNative](https://github.com/Fasen24-AI/swordboiMacNative) (the code base this build uses, described below). The repository is a fork of [cheemu21/kid-with-sword-remake](https://github.com/cheemu21/kid-with-sword-remake), and some of its memory savers are ported here.
 
