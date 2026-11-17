@@ -285,7 +285,8 @@ static void ws_report(uint64_t frame, uint64_t frames) {
 #include "nvn_rec.h"   // deferred encoding (DM_NVN_ENC_THREAD)
 static NSHashTable *g_res_objects;
 static int g_res_grew;   // the changes the next commit carries include an addition (g_res_dirty, under g_res_mu)
-static _Atomic unsigned g_image_heap_n, g_big_n;   // g_big_n: large pools in chunks, whose buffers overlap (BIG_MIN)
+static _Atomic unsigned g_image_heap_n, g_big_n;
+static _Atomic uint64_t g_pool_heap_live, g_family_heap_live;   // bytes of the GPU-only pools' heaps and of the resolution families' heaps alive now (the memory line)   // g_big_n: large pools in chunks, whose buffers overlap (BIG_MIN)
 static inline MTL4VisibilityOptions resource_vis(void) { return MTL4VisibilityOptionDevice | (g_image_heap_n || g_big_n ? MTL4VisibilityOptionResourceAlias : 0); }
 // Residency churn by call site (the power line every 300 frames, mtl_res_stats): each commit with changes is a kernel call whose cost grows with what was added or removed
 enum { RS_SITES = 16 }; static struct { int line; uint64_t n, bytes; } g_rs_site[RS_SITES]; static uint64_t g_rs_rm, g_rs_commits, g_rs_commit_ns;
@@ -317,7 +318,7 @@ static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
 } }
 @interface NvImageHeap : NSObject { @public id<MTLHeap> heap; int pool_heap; } @end   // pool_heap: a GPU-only pool's whole heap (NvPoolHeap), never a resolution family's
 @implementation NvImageHeap
-- (void)dealloc { res_remove(heap); atomic_fetch_sub(&g_image_heap_n, 1); }
+- (void)dealloc { uint64_t sz = heap.size; res_remove(heap); atomic_fetch_sub(&g_image_heap_n, 1); atomic_fetch_sub(pool_heap ? &g_pool_heap_live : &g_family_heap_live, sz); }
 @end
 static char g_image_heap_owner_key;
 // Recycled render-target memory (GitHub issue #1831). An engine that keeps its render targets in a GPU-only pool and moves or resizes them with its dynamic resolution names new
@@ -499,7 +500,7 @@ static void res_commit(void) {
 }
 // What the residency set holds: totals by kind and the largest objects. At the first GPU out-of-memory error (the error names none of them), and for DM_CTL "restop" (hle_hid.c). The set holds
 // the game's pools (shared buffers over guest memory), textures, heaps and staging alike
-static uint64_t g_pool_heap_n, g_pool_heap_bytes, g_pool_heap_tex, g_pool_heap_unfit;   // GPU-only pools' placement heaps made, their size, render targets placed and kept apart (pool_heap_texture)
+static uint64_t g_pool_heap_n, g_pool_heap_bytes, g_pool_heap_tex, g_pool_heap_unfit, g_pool_heap_family;   // GPU-only pools' placement heaps made, their size, render targets placed and kept apart (pool_heap_texture)
 static int range_cmp(const void *x, const void *y) { uintptr_t a = *(const uintptr_t *)x, b = *(const uintptr_t *)y; return a < b ? -1 : a > b; }
 static void res_top(const char *why) { @autoreleasepool {
     enum { N = 24 }; id<MTLAllocation> top[N] = {nil}; uint64_t total = 0, n = 0, kind[4] = {0}, count[4] = {0};
@@ -512,8 +513,8 @@ static void res_top(const char *why) { @autoreleasepool {
     MLOG("%s: the residency set holds %llu objects, %llu MB (Metal's recommended working set %llu MB, GPU allocated %llu MB): textures %llu, %llu MB; heaps %llu, %llu MB; shared buffers %llu, %llu MB; private buffers %llu, %llu MB; the largest:", why,
          (unsigned long long)n, (unsigned long long)(total >> 20), (unsigned long long)(g_dev.recommendedMaxWorkingSetSize >> 20), (unsigned long long)(g_dev.currentAllocatedSize >> 20),
          (unsigned long long)count[0], (unsigned long long)(kind[0] >> 20), (unsigned long long)count[1], (unsigned long long)(kind[1] >> 20), (unsigned long long)count[2], (unsigned long long)(kind[2] >> 20), (unsigned long long)count[3], (unsigned long long)(kind[3] >> 20));
-    if (g_pool_heap_n) MLOG("  GPU-only pool heaps: %llu, %llu MB in all; %llu render targets placed in them, %llu kept apart (no room in their range)", (unsigned long long)g_pool_heap_n,
-                            (unsigned long long)(g_pool_heap_bytes >> 20), (unsigned long long)g_pool_heap_tex, (unsigned long long)g_pool_heap_unfit);
+    if (g_pool_heap_n) MLOG("  GPU-only pool heaps: %llu, %llu MB in all; %llu render targets placed in them (%llu of a resolution family, uncompressed), %llu kept apart (no room in their range)", (unsigned long long)g_pool_heap_n,
+                            (unsigned long long)(g_pool_heap_bytes >> 20), (unsigned long long)g_pool_heap_tex, (unsigned long long)g_pool_heap_family, (unsigned long long)g_pool_heap_unfit);
     // Shared buffers may overlap (a large pool's chunks): the pages they cover once; textures by pixel format
     { enum { NF = 1024 }; uint64_t fb[NF] = {0}, fc[NF] = {0}; size_t nr = 0, cr = 256; uintptr_t (*rg)[2] = malloc(cr * sizeof *rg);
       pthread_mutex_lock(&g_res_mu);
@@ -4839,7 +4840,7 @@ static id<MTLTexture> image_texture(const tex_t *t, MTLTextureDescriptor *d0) {
         MTLHeapDescriptor *hd = [MTLHeapDescriptor new]; hd.type = MTLHeapTypePlacement; hd.size = capacity;
         hd.storageMode = d.storageMode; hd.cpuCacheMode = d.cpuCacheMode; hd.hazardTrackingMode = d.hazardTrackingMode;
         id<MTLHeap> heap = [g_dev newHeapWithDescriptor:hd]; if (!heap) return nil;
-        owner = [NvImageHeap new]; owner->heap = heap; atomic_fetch_add(&g_image_heap_n, 1);
+        owner = [NvImageHeap new]; owner->heap = heap; atomic_fetch_add(&g_image_heap_n, 1); atomic_fetch_add(&g_family_heap_live, heap.size);
     }
     id<MTLTexture> mt = [owner->heap newTextureWithDescriptor:d offset:0]; if (!mt) return nil;
     objc_setAssociatedObject(mt, &g_image_heap_owner_key, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -4900,7 +4901,21 @@ static id<MTLTexture> pool_heap_texture(const tex_t *t, MTLTextureDescriptor *d)
     uint64_t lo = (uint64_t)((double)t->off * POOL_HEAP_SCALE), hi = (uint64_t)((double)((uint64_t)t->off + t->L.size) * POOL_HEAP_SCALE);
     uint64_t at = (lo + need.align - 1) / need.align * need.align;
     if (at + need.size > hi) { g_pool_heap_unfit++; return nil; }
+    // A resolution family in the pool's heap (another description at this offset and format, another size): written uncompressed, as image_texture writes a family's members
+    // (DM_NVN_FAMILY_NOCOMPRESS), so a size that reads what another wrote finds misplaced texels of its format rather than another size's compressed blocks (ASTRAL CHAIN's glow)
+    static int nocomp = -1; if (nocomp < 0) { const char *e = getenv("DM_NVN_FAMILY_NOCOMPRESS"); nocomp = !(e && !strcmp(e, "0")); }
+    int family = 0;
     pthread_mutex_lock(&g_smu);
+    if (nocomp && image_shape(t) && d.allowGPUOptimizedContents) {
+        for (uint32_t i = 0; i < g_alias.cap && !family; i++) if (g_alias.vals[i]) {
+            const alias_key *k = (const alias_key *)(const void *)(g_alias.keys + (size_t)i * g_alias.klen);
+            family = k->pool == (uint64_t)(uintptr_t)p && k->off == t->off && k->d.format == t->d.format && (k->d.width != t->d.width || k->d.height != t->d.height);
+        }
+        for (uint32_t i = 0; i < g_image_desc.cap && !family; i++) if (g_image_desc.vals[i]) {
+            const tex_t *o = g_image_desc.vals[i];
+            family = o->pool == p && o->off == t->off && o->d.format == t->d.format && (o->d.width != t->d.width || o->d.height != t->d.height);
+        }
+    }
     NvPoolHeap *h = (__bridge NvPoolHeap *)nvn_hm_get(&g_pool_heap, &p);
     if (!h) {
         uint64_t size = ((uint64_t)((double)p->size * POOL_HEAP_SCALE) + need.align + POOL_HEAP_GRAIN - 1) / POOL_HEAP_GRAIN * POOL_HEAP_GRAIN;
@@ -4908,12 +4923,13 @@ static id<MTLTexture> pool_heap_texture(const tex_t *t, MTLTextureDescriptor *d)
         hd.storageMode = MTLStorageModePrivate; hd.hazardTrackingMode = d.hazardTrackingMode;
         id<MTLHeap> heap = [g_dev newHeapWithDescriptor:hd];
         if (heap) { h = [NvPoolHeap new]; h->heap = heap; h->pool_heap = 1; h->ngrain = size / POOL_HEAP_GRAIN; h->used = calloc(h->ngrain, 1);
-            atomic_fetch_add(&g_image_heap_n, 1); nvn_hm_put(&g_pool_heap, &p, (void *)CFBridgingRetain(h)); g_pool_heap_n++; g_pool_heap_bytes += size;
+            atomic_fetch_add(&g_image_heap_n, 1); atomic_fetch_add(&g_pool_heap_live, heap.size); nvn_hm_put(&g_pool_heap, &p, (void *)CFBridgingRetain(h)); g_pool_heap_n++; g_pool_heap_bytes += size;
             static int nl; if (nl++ < 8) MLOG("GPU-only pool %p (%llu MB): its render targets share one placement heap of %llu MB", p->mem, (unsigned long long)(p->size >> 20), (unsigned long long)(size >> 20)); }
     }
     pthread_mutex_unlock(&g_smu);
     if (!h || at + need.size > h->heap.size) return nil;
-    id<MTLTexture> mt = [h->heap newTextureWithDescriptor:d offset:at]; if (!mt) return nil;
+    MTLTextureDescriptor *pd = d; if (family) { pd = [d copy]; pd.allowGPUOptimizedContents = NO; g_pool_heap_family++; }
+    id<MTLTexture> mt = [h->heap newTextureWithDescriptor:pd offset:at]; if (!mt) return nil;
     objc_setAssociatedObject(mt, &g_image_heap_owner_key, h, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     res_add(mt); g_pool_heap_tex++;
     size_t g0 = at / POOL_HEAP_GRAIN, g1 = MIN((at + need.size - 1) / POOL_HEAP_GRAIN, h->ngrain - 1); int all_new = 1;
@@ -5161,8 +5177,13 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
                 NvAtomicRaw *own = [NvAtomicRaw new]; own->raw = raw; objc_setAssociatedObject(mt, &g_atomic_raw_key, own, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         } else {
-            mt = image_texture(t, d);
-            if (!mt) mt = pool_heap_texture(t, d);   // the pool's own heap first (#1453); what it leaves out may take a recycled heap (rh_texture)
+            // The pool's own heap first (#1453), then a resolution family's heap (image_texture), then a recycled heap (rh_texture). Families came first: an offset that had held two
+            // sizes got a heap of its own, sized for the larger, beside the pool's heap that already covers that memory. Ocarina of Time's render-target pools move their targets
+            // every frame (about 11 storage takeovers a frame), so most offsets had held two sizes: on a 16 GB M5 docked at 1440p (2026-11-18) about 490 such heaps came and went,
+            // 0.4-2.5 GB of them beside the pools' 0.5 GB of heaps, and the watchdog stopped the game at 13.5 GB. In the pool's heap every description at an offset lies at the
+            // same scaled place, one memory as on NVN; families keep their own heaps where the pool has none (a virtual pool, one over POOL_HEAP_MAX) or the texture does not fit its range
+            mt = pool_heap_texture(t, d);
+            if (!mt) mt = image_texture(t, d);
             if (!mt) { rt_lossy(d); mt = rh_texture(t, d); if (!mt) mt = [g_dev newTextureWithDescriptor:d];
                 if (!mt && d.compressionType == MTLTextureCompressionTypeLossy) { d.compressionType = MTLTextureCompressionTypeLossless; mt = [g_dev newTextureWithDescriptor:d]; }
                 if (mt) { res_add(mt); if (!tex_init_fill(t, mt)) tex_zero_fill(mt); } }
@@ -5220,9 +5241,9 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
       for (id<MTLAllocation> o in g_res_objects.allObjects) { int k = [(id)o conformsToProtocol:@protocol(MTLTexture)] ? 0 : [(id)o conformsToProtocol:@protocol(MTLHeap)] ? 1 : ((id<MTLBuffer>)o).storageMode == MTLStorageModeShared ? 2 : 3; kind[k] += o.allocatedSize; count[k]++; }
       pthread_mutex_unlock(&g_res_mu);
       uint64_t ga = g_dev.currentAllocatedSize >> 20, set = (kind[0] + kind[1] + kind[2] + kind[3]) >> 20;
-      MLOG("memory budget up to frame %llu: footprint %llu MB = GPU allocated %llu MB + the rest %lld MB; in the residency set: textures %llu, %llu MB; heaps %llu, %llu MB (GPU-only pool heaps %llu, %llu MB); shared buffers (guest pools) %llu, %llu MB; private buffers %llu, %llu MB; allocated outside the set %lld MB; pools kept out of the raw pool table until bound %llu, %llu MB",
+      MLOG("memory budget up to frame %llu: footprint %llu MB = GPU allocated %llu MB + the rest %lld MB; in the residency set: textures %llu, %llu MB; heaps %llu, %llu MB (alive now: GPU-only pools' heaps %llu MB, resolution families' heaps %llu MB; pool heaps made %llu, %llu MB in all); shared buffers (guest pools) %llu, %llu MB; private buffers %llu, %llu MB; allocated outside the set %lld MB; pools kept out of the raw pool table until bound %llu, %llu MB",
            frame, (unsigned long long)rss_mb, (unsigned long long)ga, (long long)rss_mb - (long long)ga, (unsigned long long)count[0], (unsigned long long)(kind[0] >> 20), (unsigned long long)count[1], (unsigned long long)(kind[1] >> 20),
-           (unsigned long long)g_pool_heap_n, (unsigned long long)(g_pool_heap_bytes >> 20), (unsigned long long)count[2], (unsigned long long)(kind[2] >> 20), (unsigned long long)count[3], (unsigned long long)(kind[3] >> 20), (long long)ga - (long long)set, (unsigned long long)g_noraw_n, (unsigned long long)(g_noraw_bytes >> 20)); }
+           (unsigned long long)(atomic_load(&g_pool_heap_live) >> 20), (unsigned long long)(atomic_load(&g_family_heap_live) >> 20), (unsigned long long)g_pool_heap_n, (unsigned long long)(g_pool_heap_bytes >> 20), (unsigned long long)count[2], (unsigned long long)(kind[2] >> 20), (unsigned long long)count[3], (unsigned long long)(kind[3] >> 20), (long long)ga - (long long)set, (unsigned long long)g_noraw_n, (unsigned long long)(g_noraw_bytes >> 20)); }
     { uint64_t gb = 0, kb[3] = {0}; unsigned gn = 0, ge;   // what the ghost table of finalized serials alone keeps (textures of their own allocation, no live serial holding them), and of it
       // what is in use (used within GHOST_IDLE frames: kb[0]), what is idle and drains (kb[1]) and what is idle but kept for GHOST_IDLE_KEPT frames (a texture the GPU wrote: kb[2]).
       // A texture several serials name is counted once, by the first of them

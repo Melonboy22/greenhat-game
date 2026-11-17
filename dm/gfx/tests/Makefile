@@ -335,6 +335,13 @@ check_t_mem_watchdog: t_mem_watchdog
 	./t_mem_watchdog low
 	./t_mem_watchdog runaway
 	./t_mem_watchdog nosoft
+# Render targets of a GPU-only pool's resolution families go into the pool's own heap, one memory per offset (t_pool_family.m)
+t_pool_family: t_pool_family.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_family.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_pool_family
+check_t_pool_family: t_pool_family
+	MTL_DEBUG_LAYER=1 ./t_pool_family
+	MTL_DEBUG_LAYER=1 ./t_pool_family off
 t_pool_finalize: t_pool_finalize.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_finalize.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_pool_finalize

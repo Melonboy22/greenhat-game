@@ -163,6 +163,9 @@ static void cross_size_read(void) {
     mtl_alias_drop_pool(&pool); free(mem);
 }
 int main(void) { @autoreleasepool {
+    // The resolution families' own heaps: since 2026-11-18 a GPU-only pool's heap takes a family first (pool_heap_texture; t_pool_family checks that), so these checks run with the
+    // pool heaps off, as for a pool that has none (a virtual one, one over POOL_HEAP_MAX)
+    setenv("DM_NVN_POOL_HEAP", "0", 0);
     mtl_init(); __weak id<MTLHeap> weak_heap; void *mem=NULL;
     posix_memalign(&mem,16384,16<<20); memset(mem,0,16<<20);
     @autoreleasepool {
