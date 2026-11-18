@@ -159,6 +159,7 @@ DM_NVN_DEFER_AB	diagnostic	`=1` keeps the deferred pass merging (with `DM_NVN_TB
 DM_NVN_DEPTHOVR	diagnostic	`=<fragment shader key prefix>,…`: those draws compare depth with `ALWAYS`; with `DM_NVN_HILITE`, tells "the depth test rejects every fragment" from "nothing rasterizes"
 DM_NVN_DIRECT_UPLOAD	switch	0 disables bounded direct RGBA16F array uploads and keeps staged copies; on by default for supported non-sparse textures.
 DM_NVN_DIRTYCHECK	diagnostic	`=1` fully hashes pool content on every use to find changes the dirty-page tracking missed
+DM_NVN_DISPATCH_CLAMP	switch	`0` turns off the clamp of GPU-written indirect dispatch counts (a record of more than 2^22 threadgroups in all dispatches nothing); garbage counts hang the GPU without it
 DM_NVN_DISPATCH_OVERLAP	switch	`1` runs the game's compute dispatches with no barrier of its and nothing else between them side by side in the copy encoder, as NVN allows; `0` orders each after the one before (the default unless the profile sets dispatch_overlap: Ocarina of Time does)
 DM_NVN_DISPATCH_OWN	switch	`=1` gives every compute dispatch a compute encoder of its own with full barriers, as before (by default dispatches share the copy encoder); `DM_NVN_PASSGPU` does the same
 DM_NVN_DUAL_WANT	path	`=<file>`: appends the key of each pixel shader a pipeline blends with its output 1 as the second source, while it has no dual-source entry point, to that file, once per key (the profile's `dual_want.tsv`)
@@ -258,6 +259,8 @@ DM_NVN_TSV	diagnostic	`=<path>` writes the per-frame NVN call table and timing r
 DM_NVN_TSV_CALLS	diagnostic	`0` makes `DM_NVN_TSV` write only the timing rows, without the call counts (about two thirds of the file)
 DM_NVN_TS_HZ	switch	`=<Hz>` sets the tick rate of the raw counter timestamps instead of the profile's `gpu_ts_hz` (default 614,400,000)
 DM_NVN_UB	diagnostic	`="name=item,…;…"`: alternating measurement in one run; odd phases of `DM_NVN_UB_N` frames (default 180) take one category in turn (`@set:<global>=<value>` or dropped shader keys) and log present times
+DM_NVN_UBDC	switch	`0` turns off the remembered uniform conflict answers: ubd_conflict_sh walks every binding at every draw, as before (for an A/B in one build)
+DM_NVN_UBDC_CHECK	diagnostic	`=1` walks every uniform conflict check that a remembered clear answer would skip and logs a red line when the remembered answer was wrong
 DM_NVN_UBD_MEMO	diagnostic	`0` scans the deferred uniform update list for every lookup instead of remembering answers per range until the list changes (for timing)
 DM_NVN_UBP_CHECK	diagnostic	`=1` checks every uniform shadow made from memory: the pass ends, the updates land, the replay waits for the GPU and compares (a difference is a red line; slow)
 DM_NVN_UBP_RUNNING	switch	`0` refuses a uniform shadow partly covered by inline updates of a running submission, as before; by default those updates are remembered by byte, each with its fence, and laid over memory in the shadow
@@ -433,6 +436,7 @@ DM_UDC_SELFTEST	diagnostic	`=1` runs a start-up check of DontCare load and store
 DM_UE_SHADERS	path	Folder of the Unreal shader code archives decoded by `uepak.py`, for `shader_split.py` (default `ue_shaders` beside the RomFS); needed when the RomFS has Unreal paks
 DM_UE_TEXTURE_POOL	switch	Megabytes Unreal's texture streaming pool (`r.Streaming.PoolSize`) is raised to, overriding the profile's `ue_texture_pool`; `0` keeps the game's own pool. On iOS only this switch turns it on (`Documents/env.txt`)
 DM_UPSCALER	player	`metalfx` draws the game's own upscaler shaders (agl's NDSR network, found by the shader map) with MetalFX's spatial scaler; `off` skips them and draws their input bilinearly into their output (no sharpening at all); `game` (the default) runs them
+DM_UPSCALER_CHAIN	switch	`1` (with `DM_UPSCALER=metalfx`): MetalFX draws agl's chained upscaler network (NDSR VR, Ocarina of Time) from the frame's colour, and the three dispatches before it are left out (`up_chain_dispatch`); off by default until an A/B shows the same picture
 DM_UPSCALE_PRESET	player	`quality` (0.67), `balanced` (0.58) or `performance` (0.5): the launcher's Upscaling preset, a render scale that takes the place of DM_RENDER_SCALE; `custom` (the default) keeps DM_RENDER_SCALE
 DM_VK_CAPTURE	path	`=<dir>` (Mac) writes every SPIR-V module the game creates to `<dir>/<key>.spv`; the NSP script's Vulkan shader capture stage sets it
 DM_VK_LOG	diagnostic	`=1` logs Vulkan object creation in the Vulkan-on-Metal layer

@@ -320,6 +320,8 @@ t_sbw: t_sbw.m $(MTL_T_DEP)
 .PHONY: check_t_sbw
 check_t_sbw: t_sbw
 	./t_sbw
+t_ubdc: t_ubdc.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_ubdc.m $(MTL_T_SRC) $(FW)
 t_ubp_running: t_ubp_running.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_ubp_running.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_ubp_running
@@ -544,6 +546,9 @@ check_t_attachment_capacity: t_attachment_capacity
 	@for compiler in 0 1; do for td in 0 1; do for enc in 0 1; do \
 	    DM_PSO_MTL4=$$compiler DM_NVN_TBDR=$$td DM_NVN_ENC_THREAD=$$enc MTL_DEBUG_LAYER=1 ./t_attachment_capacity || exit $$?; \
 	done; done; done
+t_dispatch_clamp: t_dispatch_clamp.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_dispatch_clamp.m $(MTL_T_SRC) $(FW)
+check_t_dispatch_clamp: RUN_ENV = MTL_DEBUG_LAYER=1
 t_image_attachment_store: t_image_attachment_store.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_image_attachment_store.m $(MTL_T_SRC) $(FW)
 check_t_image_attachment_store: RUN_ENV = MTL_DEBUG_LAYER=1

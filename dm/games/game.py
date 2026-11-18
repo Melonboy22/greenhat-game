@@ -105,16 +105,20 @@ def by_build(main_id):   # the profile whose build rows register this main build
 # and of its variants agl_ndsr_vr.pck and agl_ndsr_vr_light.pck: The Legend of Zelda: Ocarina of Time (Switch 2) upscales with agl_ndsr_vr.pck's, so DM_UPSCALER=metalfx left its network
 # running. A variant the host cannot draw (its colour, its rectangles) is refused there and runs as the game's (nvn_mtl.m up_mfx_wanted, up_mfx_encode)
 UPSCALER_SOURCE = re.compile(r'/agl_ndsr(?:_vr(?:_light)?)?\.pck#')
+# agl's chained upscaler (NDSR VR), from GreenKid-MV (adi0900): the compute shaders of agl_ndsr_vr.pck and agl_ndsr_vr_light.pck alone. Four dispatches a frame, not one: three that
+# square-root and pack the frame's colour into images only the chain reads, then the network, which writes the output picture. With DM_UPSCALER_CHAIN=1 MetalFX draws the network
+# from the colour the first stage reads and the three stages are left out (nvn_mtl.m up_chain_dispatch)
+UPSCALER_CHAIN_SOURCE = re.compile(r'/agl_ndsr_vr(?:_light)?\.pck#')
 
 
-def upscaler_keys(g):
+def upscaler_keys(g, source=UPSCALER_SOURCE):
     """the game's own upscaler shaders, from its shader map (shader_split.py's source column): sorted 16-digit keys, none without a map"""
     p = g.table('shader_map.tsv')
     if not p.exists(): return []
     keys = set()
     for line in p.read_text(encoding='utf-8').splitlines():
         c = line.split('\t')
-        if len(c) >= 5 and c[2] == 'compute' and UPSCALER_SOURCE.search(c[4]) and re.fullmatch(r'[0-9a-f]{16}', c[3]): keys.add(c[3])
+        if len(c) >= 5 and c[2] == 'compute' and source.search(c[4]) and re.fullmatch(r'[0-9a-f]{16}', c[3]): keys.add(c[3])
     return sorted(keys)
 
 
@@ -207,7 +211,7 @@ def header_one(g):
     if vcr not in ('on', 'off'): sys.exit(f'{g.id}: vconv_range must be on or off: {vcr}')
     mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
     if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
-    ups = upscaler_keys(g)   # the game's own upscaler shaders, which DM_UPSCALER=metalfx (the launcher's Game's upscaler) replaces with MetalFX's spatial scaler (nvn_mtl.m up_mfx_encode)
+    ups, chain = upscaler_keys(g), upscaler_keys(g, UPSCALER_CHAIN_SOURCE)   # chain: the VR packs' shaders, also in ups; the game's own upscaler shaders, which DM_UPSCALER=metalfx (the launcher's Game's upscaler) replaces with MetalFX's spatial scaler (nvn_mtl.m up_mfx_encode)
     dbr = g.get('draw_barriers', 'full')   # how draw passes are ordered (nvn_mtl.m barrier_game): full = each waits for all earlier GPU work, game = by the game's own barriers, so vertex work overlaps the previous pass's fragments
     if dbr not in ('full', 'game'): sys.exit(f'{g.id}: draw_barriers must be full or game: {dbr}')
     tsh = g.get('gpu_ts_hz', '614400000')   # the counter timestamps' tick rate (nvn_timestamp.h): 614400000 (NVN), 31250000 for a Switch 2 game that reads raw reports at its system counter rate
@@ -297,6 +301,7 @@ def header_one(g):
          f'#define DM_GAME_DRAW_BARRIERS_GAME {int(dbr == "game")}',
          f'#define DM_GAME_GPU_TS_HZ {int(tsh)}ull',
          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
+         f'#define DM_GAME_UPSCALER_CHAIN_KEYS {q(",".join(chain))}', f'#define DM_GAME_UPSCALER_CHAIN_N {len(chain)}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          f'#define DM_GAME_ROMFS_SUBST {q(rsub)}',
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)

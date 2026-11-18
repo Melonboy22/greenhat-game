@@ -62,10 +62,12 @@ def macros(shader_map):
 
 class UpscalerKeys(unittest.TestCase):
     def test_from_shader_map(self):
-        none = ['#define DM_GAME_UPSCALER_KEYS ""', '#define DM_GAME_UPSCALER_N 0']   # the launcher hides the setting
+        none = ['#define DM_GAME_UPSCALER_KEYS ""', '#define DM_GAME_UPSCALER_N 0', '#define DM_GAME_UPSCALER_CHAIN_KEYS ""', '#define DM_GAME_UPSCALER_CHAIN_N 0']   # the launcher hides the setting
         self.assertEqual(macros(None), none)
         self.assertEqual(macros(MAP.split('cs_other.bin')[0]), none)
-        self.assertEqual(macros(MAP), ['#define DM_GAME_UPSCALER_KEYS "7629d857a0a93833,c56db3d5a0f1b5af,fa3033d05c0a41d6"', '#define DM_GAME_UPSCALER_N 3'])
+        # the VR packs' shaders are upscalers and, alone, the chained upscaler's (nvn_mtl.m up_chain_dispatch)
+        self.assertEqual(macros(MAP), ['#define DM_GAME_UPSCALER_KEYS "7629d857a0a93833,c56db3d5a0f1b5af,fa3033d05c0a41d6"', '#define DM_GAME_UPSCALER_N 3',
+                                       '#define DM_GAME_UPSCALER_CHAIN_KEYS "fa3033d05c0a41d6"', '#define DM_GAME_UPSCALER_CHAIN_N 1'])
 
 
 if __name__ == '__main__':
