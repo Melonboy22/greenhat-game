@@ -191,7 +191,7 @@ DM_NVN_GMEM_NOBIG	switch	`1` / `0` overrides the profile's `gmem_nobig`: a large
 DM_NVN_GMEM_SKIP	switch	`1` / `0` overrides the profile's `gmem_skip`: compressible (render-target), shader code and GPU no-access pools stay out of the raw global memory table, and so are not wired, until a binding makes them resident
 DM_NVN_GPUPROF	diagnostic	`=<f>`, `<f1>-<f2>` or `every:<n>`: logs the GPU start and duration of every encoder of those frames (`[gpuprof]` lines from Metal 4 counter heap timestamps)
 DM_NVN_GPUPROF_GEOM	diagnostic	`=1` (with `DM_NVN_GPUPROF`) also stamps each render pass where its vertex and mesh stages finish; the pass line ends in `geom <us>` and `gpuprof.py` splits each pass into geometry and the time after it
-DM_NVN_GPU_STORAGE	switch	`0` stops what the GPU writes into a GPU texture in storage the CPU can read from being read back into that storage (on by default; `tex_storage_gpu`), to measure it
+DM_NVN_GPU_STORAGE	switch	`0` stops what the GPU writes into a GPU texture in storage the CPU can read from being written into that storage on the GPU (on by default; `tex_storage_gpu`, `gsb_store`), to measure it
 DM_NVN_GPU_TS	switch	`segment` or `submission`: what timestamp reports record (GPU start / end of the segment holding each report, or one time for the whole submission), instead of the profile's `gpu_timestamps`
 DM_NVN_HILITE	diagnostic	`=<fragment shader key>,…`: those draws use a solid colour instead (magenta, green, cyan, yellow, blue, white in order), to tell wrong geometry from wrong shading
 DM_NVN_INDLOG	diagnostic	`=<n>`: the first n indirect draws (and those of pass-dumped frames) log their arguments at encode and as the GPU left them once the submission completed, with the first indices

@@ -346,7 +346,7 @@ static void stale_pools(void) {
 }
 
 // A GPU texture in storage the CPU can read (no packaged layout, never CPU-written; a CPU_CACHED | GPU_CACHED pool): what a render pass, a texture copy and a texture clear write
-// into it reaches its storage too, as on the hardware (gsb_mark). Ocarina of Time moves the terrain normal maps the GPU drew with memcpy and re-creates them at the new address
+// into it reaches its storage too, as on the hardware (gsb_store). Ocarina of Time moves the terrain normal maps the GPU drew with memcpy and re-creates them at the new address
 static void gpu_storage(void) {
     enum { N = 1 << 20, W = 128 };
     void *mem = NULL; if (posix_memalign(&mem, getpagesize(), N)) abort(); memset(mem, 0, N);
