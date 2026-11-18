@@ -4448,8 +4448,15 @@ static void tex_zero_fill(id<MTLTexture> mt) {
 // (nvn_flushed in hle_nvn.c: Breath of the Wild's sky scattering tables, copied into their pools and flushed; without them the sky was brownish grey). DM_NVN_FLUSH_FILL=0 leaves
 // those out, as before. In a CPU_UNCACHED pool the CPU's writes reach memory with no flush, and the GPU reads that memory: what the storage holds at the texture's first use is its
 // content there too, flushed or not. Donkey Kong Country: Tropical Freeze's title logo and menu panels (ASTC 5x5, no packaged layout) sit in CPU_UNCACHED | GPU_CACHED pools
-// (flags 0x22) whose storage holds their texels at first use (the 912x512 logo: 242,374 of 376,832 bytes non-zero), never flushed; as GPU textures of zeros they were magenta
+// (flags 0x22) whose storage holds their texels at first use (the 912x512 logo: 242,374 of 376,832 bytes non-zero), never flushed; as GPU textures of zeros they were magenta.
+// And storage the GPU wrote through a GPU texture whose writes are stored into it (tex_storage_gpu, gsb_store): what it holds is what the GPU drew there, as the hardware's memory
+// would. Ocarina of Time makes a new texture object over a terrain normal tile's storage once the old object is gone (the tile slot reused in place, or its storage moved back): while
+// the old object's sharing entry lives the new one shares its host texture, but the alias sweep lets idle entries go after 600 submissions (and the memory guard sooner), and the new
+// object then came up as a GPU texture of zeros, not drawn again: a zero normal, woven / crosshatched ground across the tile (oot-plus 2026-11-18: 3 of 27 registered normal tiles
+// zero on the host, 2 of them in the frame's terrain draws, with a drawn normal map in their storage). DM_NVN_GPU_STORAGE_FILL=0 leaves those out
 int nvn_flushed(const void *p, uint64_t n);   // hle_nvn.c
+static int tex_storage_gpu(const tex_t *t, id<MTLTexture> mt); static int gws_owned(uintptr_t lo, uintptr_t hi);
+static uint64_t g_stored_fills;   // new GPU textures filled from storage their GPU writes were stored into (t_cpu_storage)
 static int mem_any(const uint8_t *p, uint64_t n) {   // whether any byte is non-zero (stops at the first)
     uint64_t i = 0, v;
     for (; i + 8 <= n; i += 8) { memcpy(&v, p + i, 8); if (v) return 1; }
@@ -4465,12 +4472,16 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     // and skipping the fill left all 74 of them with content 0, the screen black but for text
     if (no_cpu && (t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE)) return 0;
     static int flush_fill = -1; if (flush_fill < 0) { const char *e = getenv("DM_NVN_FLUSH_FILL"); flush_fill = !e || atoi(e) != 0; }
-    if (!no_cpu && !uncached && (!flush_fill || !nvn_flushed(t->mem, t->L.size))) return 0;
+    static int stored_fill = -1; if (stored_fill < 0) { const char *e = getenv("DM_NVN_GPU_STORAGE_FILL"); stored_fill = !e || atoi(e) != 0; }
+    int flushed = !no_cpu && !uncached && flush_fill && nvn_flushed(t->mem, t->L.size);
+    int stored = !no_cpu && !uncached && !flushed && stored_fill && tex_storage_gpu(t, mt) && gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size);
+    if (!no_cpu && !uncached && !flushed && !stored) return 0;
     if (!atomic_load(&g_sub_thread_set) || !on_sub_thread() || !mem_any(t->mem, t->L.size)) return 0;   // the upload batch belongs to the submit thread
     if (pkg_upload(t, NULL, mt, 0) != mt) return 0;
-    int why = no_cpu ? 0 : uncached ? 1 : 2;
-    static uint64_t n[3]; if (n[why]++ < 4) MLOG("initial content: ser=%llu %ux%ux%u format %#x filled from its storage, %s (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format,
-                                                 (const char *[]){"a CPU_NO_ACCESS pool's", "a CPU_UNCACHED pool's", "flushed by the CPU before its first use"}[why], (unsigned long long)n[why]);
+    int why = no_cpu ? 0 : uncached ? 1 : flushed ? 2 : 3;
+    if (why == 3) g_stored_fills++;
+    static uint64_t n[4]; if (n[why]++ < 4) MLOG("initial content: ser=%llu %ux%ux%u format %#x filled from its storage, %s (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format,
+                                                 (const char *[]){"a CPU_NO_ACCESS pool's", "a CPU_UNCACHED pool's", "flushed by the CPU before its first use", "which holds what the GPU drew there (DM_NVN_GPU_STORAGE_FILL=0 leaves it out)"}[why], (unsigned long long)n[why]);
     return 1;
 }
 

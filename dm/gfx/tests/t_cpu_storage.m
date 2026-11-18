@@ -35,6 +35,16 @@ static uint8_t first_red(id<MTLTexture> image) {   // the red of texel (3, 5), r
     CHECK("readback completes", cb.status == MTLCommandBufferStatusCompleted);
     return *(uint8_t *)out.contents;
 }
+static uint8_t level_red(id<MTLTexture> image, unsigned lv) {   // the red of texel (0, 0) of a level, for 2-byte texels (RG8)
+    static id<MTLCommandQueue> queue; if (!queue) queue = [g_dev newCommandQueue];
+    id<MTLBuffer> out = [g_dev newBufferWithLength:4 options:MTLResourceStorageModeShared];
+    if (!image || !out) { fprintf(stderr, "nothing to read back\n"); return 0; }
+    id<MTLCommandBuffer> cb = [queue commandBuffer]; id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder];
+    [be copyFromTexture:image.parentTexture ?: image sourceSlice:0 sourceLevel:lv sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(1, 1, 1) toBuffer:out destinationOffset:0 destinationBytesPerRow:2 destinationBytesPerImage:2];
+    [be endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    CHECK("level readback completes", cb.status == MTLCommandBufferStatusCompleted);
+    return *(uint8_t *)out.contents;
+}
 static uint8_t stored_red(const tex_t *t) {   // the red of texel (3, 5) of level 0, as the storage holds it
     uint8_t *linear = malloc((size_t)t->d.width * t->d.height * 4);
     CHECK("fixture deswizzle succeeds", !nvn_deswizzle(&t->d, 0, 0, t->mem, linear, t->d.width * 4));
@@ -284,7 +294,20 @@ int main(void) {
               for (unsigned i = 0; i < w * w; i++) bad += lin[i * 2] != (lv + 1) * 5 || lin[i * 2 + 1] != 51; }
           CHECK("every level of a 260x260 RG8 tile reaches its storage, every texel", !bad); free(lin); }
         CHECK("none of it through the tables of textures uploaded from their storage", !g_nabs && !g_nabsp && !g_mrb_n && !g_mrb_untracked);
-        mtl_tex_release(&tile); teardown(&g); mtl_tex_release(&moved2); mtl_tex_release(&moved); mtl_tex_release(&large);
+        // The game makes a new object over the tile's storage once the old one is gone and the sharing table has let the old host texture go (alias_sweep after 600 idle
+        // submissions, or the memory guard): it holds what the GPU drew, filled from the storage, and stays a GPU texture. Before, a GPU texture of zeros: Ocarina of Time's
+        // woven ground (a zero normal across the tile)
+        mtl_tex_release(&tile); mtl_drain();
+        pthread_mutex_lock(&g_smu); ghost_del_locked(tile.serial); pthread_mutex_unlock(&g_smu);   // the finalized serial leaves the ghost table (ring trim, memory guard)
+        mtl_sub_begin(); unsigned gone = alias_evict_idle(0); finish(); mtl_drain();
+        CHECK("the old tile's sharing entry is let go", gone >= 1);
+        uint64_t fills = g_stored_fills;
+        tex_t remade = texture_at(&g, 7071, 0x40000, 260, NVN_FORMAT_RG8, 0); remade.d.levels = 9; nvn_tex_layout(&remade.d, &remade.L);
+        id<MTLTexture> tile_img = resolve(&remade);
+        CHECK("a new object over a drawn tile's storage holds the drawing: level 0", level_red(tile_img, 0) == 5);
+        CHECK("and the smallest level", level_red(tile_img, 8) == 45);
+        CHECK("filled from its storage once, and still a GPU texture", g_stored_fills == fills + 1 && !tex_cpu_written(remade.serial));
+        mtl_tex_release(&remade); teardown(&g); mtl_tex_release(&moved2); mtl_tex_release(&moved); mtl_tex_release(&large);
         teardown(&f);
     }
     printf("t_cpu_storage: %d checks, %d failed\n", checks, failed);
