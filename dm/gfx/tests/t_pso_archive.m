@@ -533,7 +533,7 @@ static long pick_n(NSArray<NSArray<NSNumber *> *> *groups) {
         [names addObject:g[1].intValue > 0 ? [NSString stringWithFormat:@"/x/%05d-%d.mtl4a", seq, g[1].intValue] : g[1].intValue ? [NSString stringWithFormat:@"/x/%05d-x.mtl4a", seq]
                                             : [NSString stringWithFormat:@"/x/%05d.mtl4a", seq]];
     arch_flush_wait(); dispatch_sync(g_arch_q, ^{});   // an earlier test's queued write or finish must not land between the pick and the count
-    g_compacted = 0; g_compact_enabled = 0; g_compact_files = nil; g_compact_state = NULL; arch_compact_pick(names);
+    g_compacted = 0; g_compact_enabled = 0; g_compact_files = nil; g_compact_state = NULL; arch_compact_pick(names, NULL);   // no index information: every run file counts (the tiers alone; t_pso_compact checks the indexed files)
     long n = g_compact_enabled ? compacting_n() : 0;
     g_compact_enabled = 0; g_compact_files = nil; g_compact_state = NULL;
     return n;
@@ -852,7 +852,7 @@ int main(int argc, char **argv) { @autoreleasepool {
                 added += 30 * 6;
                 NSMutableArray<NSString *> *names = [NSMutableArray array];
                 for (NSNumber *c in files) [names addObject:[NSString stringWithFormat:@"/x/%05d-%d.mtl4a", seq++, c.intValue]];
-                g_compact_enabled = 0; g_compact_files = nil; g_compact_state = NULL; arch_compact_pick(names);
+                g_compact_enabled = 0; g_compact_files = nil; g_compact_state = NULL; arch_compact_pick(names, NULL);   // no index information: every run file counts (the tiers alone; t_pso_compact checks the indexed files)
                 if (!g_compact_enabled) continue;
                 NSMutableArray<NSNumber *> *left = [NSMutableArray array]; long taken = 0; starts++;
                 for (NSUInteger i = 0; i < files.count; i++) { if (g_compact_state[i]) { taken += files[i].intValue; fulls += files[i].intValue >= F; } else [left addObject:files[i]]; }
@@ -899,7 +899,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         NSMutableArray<id<MTL4Archive>> *open = [NSMutableArray array]; NSMutableArray<NSString *> *paths = [NSMutableArray array];
         for (NSString *n in names.reverseObjectEnumerator) { NSString *f = [@(cdir) stringByAppendingPathComponent:n]; [paths addObject:f]; [open addObject:[g_dev newArchiveWithURL:[NSURL fileURLWithPath:f] error:&err]]; }
         nvn_hm_clear(&g_pbase, hm_rel); g_arch4 = open;   // as a new start with these files
-        arch_compact_pick(paths);
+        arch_compact_pick(paths, NULL);   // no index information: every run file counts
         EXPECT("tier: more than PSO_ARCH_COMPACT small files: compaction", 1, g_compact_enabled);
         EXPECT("tier: the small files alone", (long)small.count, compacting_n());
         NSMutableArray<NSString *> *compacted = [NSMutableArray array]; for (NSUInteger i = 0; i < paths.count; i++) if (g_compact_state[i] == 1) [compacted addObject:paths[i]];

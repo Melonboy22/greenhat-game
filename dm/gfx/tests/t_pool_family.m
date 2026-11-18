@@ -60,6 +60,16 @@ int main(int argc, char **argv) { @autoreleasepool {
     tex_t va = target(&vpool, 72000, 0, 640, 360), vb = target(&vpool, 72001, 0, 1280, 720); mtl_tex_init(&va); mtl_tex_init(&vb);
     id<MTLTexture> tva = tex_mtl(&va), tvb = tex_mtl(&vb); NvImageHeap *hva = owner_of(tva);
     CHECK(tva && hva && !hva->pool_heap && tvb && tvb.heap == tva.heap, "a virtual pool's family shares a family heap, as before");
+    // The memory line names the pools that hold families' heaps (famp_add, famp_report): this virtual pool, with its size and kind
+    { int found = 0; os_unfair_lock_lock(&g_famp_lk);
+      for (unsigned i = 0; i < g_nfamp; i++) if (g_famp[i].pool == &vpool) found = g_famp[i].n >= 1 && g_famp[i].made >= 1 && g_famp[i].bytes >= tva.heap.size && (g_famp[i].flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && g_famp[i].size == (64u << 20);
+      os_unfair_lock_unlock(&g_famp_lk);
+      CHECK(found, "the virtual pool's family heap is counted under its pool, with the pool's size and kind"); }
+    { uint64_t before = 0; os_unfair_lock_lock(&g_famp_lk); for (unsigned i = 0; i < g_nfamp; i++) if (g_famp[i].pool == &vpool) before = g_famp[i].bytes; os_unfair_lock_unlock(&g_famp_lk);
+      famp_add(&vpool, 0, 0, 0, -(int64_t)tva.heap.size);   // a heap of it freed (as NvImageHeap's dealloc does)
+      uint64_t after = 0; unsigned n = 0; os_unfair_lock_lock(&g_famp_lk); for (unsigned i = 0; i < g_nfamp; i++) if (g_famp[i].pool == &vpool) { after = g_famp[i].bytes; n = g_famp[i].n; } os_unfair_lock_unlock(&g_famp_lk);
+      CHECK(after == before - tva.heap.size && n == 0, "a freed family heap comes off its pool's count");
+      famp_add(&vpool, 64u << 20, NVN_MEMORY_POOL_FLAGS_VIRTUAL, 0, (int64_t)tva.heap.size); }   // put back: the real heap's dealloc takes it off at the end
     mtl_sub_commit(); mtl_drain();
     printf("t_pool_family%s: %d checks, %d failed\n", off ? " (off)" : nocomp ? " (nocomp)" : "", checks, failed);
     return failed != 0;

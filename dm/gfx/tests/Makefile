@@ -448,6 +448,14 @@ check_t_pull_inv: RUN_ENV = MTL_DEBUG_LAYER=1
 t_fetch_clamp: t_fetch_clamp.m ../tools/dmsh_build.py
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_fetch_clamp.m -framework Metal -framework Foundation
 check_t_fetch_clamp: RUN_ENV = MTL_DEBUG_LAYER=1
+# Which pipeline-archive run files a start compacts: by default only those without a complete index (t_pso_compact.m)
+t_pso_compact: t_pso_compact.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_compact.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_pso_compact
+check_t_pso_compact: t_pso_compact
+	./t_pso_compact
+	./t_pso_compact all
+	./t_pso_compact never
 t_pso_archive: t_pso_archive.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_archive.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_pso_archive

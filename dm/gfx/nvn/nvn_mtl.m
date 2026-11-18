@@ -316,9 +316,27 @@ static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
     g_res_dirty = 1; g_rs_rm++;
     pthread_mutex_unlock(&g_res_mu);
 } }
-@interface NvImageHeap : NSObject { @public id<MTLHeap> heap; int pool_heap; } @end   // pool_heap: a GPU-only pool's whole heap (NvPoolHeap), never a resolution family's
+// The resolution families' own heaps by memory pool (image_texture): which pools hold them, how large and of what kind (virtual, sparse, over POOL_HEAP_MAX: what keeps them out of a
+// pool's heap), for the memory line (famp_report). Ocarina of Time docked (2026-11-18) placed 11 render targets in its pools' heaps in a whole session while 100-800 MB of family
+// heaps lived, 2.6 GB at its stop: this names their pools. Under g_famp_lk, a leaf lock
+enum { FAMP_MAX = 64 };
+typedef struct { const void *pool; uint64_t size, bytes, made; uint32_t flags, n; int sparse; } famp_ent;
+static famp_ent g_famp[FAMP_MAX]; static unsigned g_nfamp; static os_unfair_lock g_famp_lk = OS_UNFAIR_LOCK_INIT;
+static void famp_add(const void *pool, uint64_t size, uint32_t flags, int sparse, int64_t bytes) {   // a family heap of `bytes` made (> 0) or freed (< 0) in pool
+    os_unfair_lock_lock(&g_famp_lk);
+    famp_ent *e = NULL; for (unsigned i = 0; i < g_nfamp && !e; i++) if (g_famp[i].pool == pool) e = &g_famp[i];
+    if (!e && bytes > 0) {
+        if (g_nfamp == FAMP_MAX) { unsigned lo = 0; for (unsigned i = 1; i < FAMP_MAX; i++) if (g_famp[i].bytes < g_famp[lo].bytes) lo = i; e = &g_famp[lo]; }   // full: the smallest gives way
+        else e = &g_famp[g_nfamp++];
+        *e = (famp_ent){.pool = pool, .size = size, .flags = flags, .sparse = sparse};
+    }
+    if (e) { if (bytes > 0) { e->n++; e->bytes += (uint64_t)bytes; e->made++; } else { if (e->n) e->n--; e->bytes = e->bytes > (uint64_t)-bytes ? e->bytes - (uint64_t)-bytes : 0; } }
+    os_unfair_lock_unlock(&g_famp_lk);
+}
+@interface NvImageHeap : NSObject { @public id<MTLHeap> heap; int pool_heap; const void *fam_pool; } @end   // pool_heap: a GPU-only pool's whole heap (NvPoolHeap), never a resolution family's; fam_pool: a family heap's memory pool (famp_add)
 @implementation NvImageHeap
-- (void)dealloc { uint64_t sz = heap.size; res_remove(heap); atomic_fetch_sub(&g_image_heap_n, 1); atomic_fetch_sub(pool_heap ? &g_pool_heap_live : &g_family_heap_live, sz); }
+- (void)dealloc { uint64_t sz = heap.size; res_remove(heap); atomic_fetch_sub(&g_image_heap_n, 1); atomic_fetch_sub(pool_heap ? &g_pool_heap_live : &g_family_heap_live, sz);
+    if (!pool_heap && fam_pool) famp_add(fam_pool, 0, 0, 0, -(int64_t)sz); }
 @end
 static char g_image_heap_owner_key;
 // Recycled render-target memory (GitHub issue #1831). An engine that keeps its render targets in a GPU-only pool and moves or resizes them with its dynamic resolution names new
@@ -4841,6 +4859,7 @@ static id<MTLTexture> image_texture(const tex_t *t, MTLTextureDescriptor *d0) {
         hd.storageMode = d.storageMode; hd.cpuCacheMode = d.cpuCacheMode; hd.hazardTrackingMode = d.hazardTrackingMode;
         id<MTLHeap> heap = [g_dev newHeapWithDescriptor:hd]; if (!heap) return nil;
         owner = [NvImageHeap new]; owner->heap = heap; atomic_fetch_add(&g_image_heap_n, 1); atomic_fetch_add(&g_family_heap_live, heap.size);
+        owner->fam_pool = t->pool; famp_add(t->pool, t->pool->size, t->pool->flags, nvn_sparse_pool(t->pool), (int64_t)heap.size);
     }
     id<MTLTexture> mt = [owner->heap newTextureWithDescriptor:d offset:0]; if (!mt) return nil;
     objc_setAssociatedObject(mt, &g_image_heap_owner_key, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -5247,6 +5266,17 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
       MLOG("memory budget up to frame %llu: footprint %llu MB = GPU allocated %llu MB + the rest %lld MB; in the residency set: textures %llu, %llu MB; heaps %llu, %llu MB (alive now: GPU-only pools' heaps %llu MB, resolution families' heaps %llu MB; pool heaps made %llu, %llu MB in all); shared buffers (guest pools) %llu, %llu MB; private buffers %llu, %llu MB; allocated outside the set %lld MB; pools kept out of the raw pool table until bound %llu, %llu MB",
            frame, (unsigned long long)rss_mb, (unsigned long long)ga, (long long)rss_mb - (long long)ga, (unsigned long long)count[0], (unsigned long long)(kind[0] >> 20), (unsigned long long)count[1], (unsigned long long)(kind[1] >> 20),
            (unsigned long long)(atomic_load(&g_pool_heap_live) >> 20), (unsigned long long)(atomic_load(&g_family_heap_live) >> 20), (unsigned long long)g_pool_heap_n, (unsigned long long)(g_pool_heap_bytes >> 20), (unsigned long long)count[2], (unsigned long long)(kind[2] >> 20), (unsigned long long)count[3], (unsigned long long)(kind[3] >> 20), (long long)ga - (long long)set, (unsigned long long)g_noraw_n, (unsigned long long)(g_noraw_bytes >> 20)); }
+    { famp_ent fe[FAMP_MAX]; unsigned fn = 0;   // the families' heaps by pool, the largest four (famp_add)
+      os_unfair_lock_lock(&g_famp_lk); fn = g_nfamp; memcpy(fe, g_famp, fn * sizeof *fe); os_unfair_lock_unlock(&g_famp_lk);
+      for (unsigned i = 0; i < fn; i++) for (unsigned j = i + 1; j < fn; j++) if (fe[j].bytes > fe[i].bytes) { famp_ent x = fe[i]; fe[i] = fe[j]; fe[j] = x; }
+      char fb[768]; size_t at = 0; fb[0] = 0;
+      for (unsigned i = 0; i < fn && i < 4 && fe[i].made; i++) {
+          const char *why = (fe[i].flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) ? "virtual" : fe[i].sparse ? "sparse" : fe[i].size > POOL_HEAP_MAX ? "over 1 GB" : !(fe[i].flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ? "CPU-visible" : "has a pool heap (targets that did not fit)";
+          at += (size_t)snprintf(fb + at, at < sizeof fb ? sizeof fb - at : 0, "%s%p (%llu MB, %s): %u alive, %llu MB, %llu made", i ? "; " : "", fe[i].pool, (unsigned long long)(fe[i].size >> 20), why,
+                                 fe[i].n, (unsigned long long)(fe[i].bytes >> 20), (unsigned long long)fe[i].made);
+          if (at >= sizeof fb) break;
+      }
+      if (fb[0]) MLOG("resolution families' heaps by memory pool up to frame %llu: %s", frame, fb); }
     { uint64_t gb = 0, kb[3] = {0}; unsigned gn = 0, ge;   // what the ghost table of finalized serials alone keeps (textures of their own allocation, no live serial holding them), and of it
       // what is in use (used within GHOST_IDLE frames: kb[0]), what is idle and drains (kb[1]) and what is idle but kept for GHOST_IDLE_KEPT frames (a texture the GPU wrote: kb[2]).
       // A texture several serials name is counted once, by the first of them
@@ -9320,13 +9350,23 @@ static int arch_tier(NSString *path) {
     for (; c >= PSO_ARCH_COMPACT && t < 7; c /= PSO_ARCH_COMPACT) t++;
     return t;
 }
-static void arch_compact_pick(NSArray<NSString *> *paths) {   // at the open: the files of the highest tier with more than PSO_ARCH_COMPACT, and of every smaller one
-    int per[9] = {0}, top = -1;
-    for (NSString *p in paths) per[arch_tier(p)]++;
+// Which run files a compaction may take. A compaction keeps only the bases the prewarm takes from the files it replaces, captured again; every other base in them goes and is built
+// again when drawn. A file with a complete index costs a lookup nothing (arch_key: the lookup asks the one file that holds a key, a miss asks none), so merging it saves nothing a
+// lookup pays for, and it held the bases play compiled that the prewarm does not reproduce: Ocarina of Time docked compiled 1,681 bases in one session, and the next start's
+// compaction took 21 such files and kept 407, so the next session compiled 1,895 again (2-6 cores compiling for the whole session, 0.7-2.4 million draws on hybrid pipelines, the
+// submit thread at 1.7-2.1 GHz, 20-45 fps; 16 GB M5, 2026-11-18). So by default only files without a complete index are compacted (written before the index, or holding a
+// pipeline with no key). DM_PSO_COMPACT=1: every run file, as before; DM_PSO_COMPACT=0: no compaction
+static int arch_compact_mode(void) { static int m = -2; if (m == -2) { const char *e = getenv("DM_PSO_COMPACT"); m = e && *e ? atoi(e) : -1; } return m; }   // -1 default, 0 never, 1 every file
+static void arch_compact_pick(NSArray<NSString *> *paths, const unsigned char *indexed) {   // at the open: the eligible files of the highest tier with more than PSO_ARCH_COMPACT of them, and of every smaller one
+    int per[9] = {0}, top = -1, mode = arch_compact_mode();
+    if (!mode) return;
+    #define ARCH_ELIGIBLE(i) (mode == 1 || !indexed || !indexed[i])
+    for (NSUInteger i = 0; i < paths.count; i++) if (ARCH_ELIGIBLE(i)) per[arch_tier(paths[i])]++;
     for (int t = 0; t < 8; t++) if (per[t] > PSO_ARCH_COMPACT) top = t;
     if (top < 0 || !arch_compact_allowed()) return;
     if (!(g_compact_state = calloc(paths.count + 1, 1))) return;   // no memory for it: no compaction this run
-    for (NSUInteger i = 0; i < paths.count; i++) if (arch_tier(paths[i]) <= top) g_compact_state[i] = 1;
+    for (NSUInteger i = 0; i < paths.count; i++) if (ARCH_ELIGIBLE(i) && arch_tier(paths[i]) <= top) g_compact_state[i] = 1;
+    #undef ARCH_ELIGIBLE
     g_compact_files = paths; g_compact_enabled = 1;
 }
 static int arch_compact_takes(id<MTL4Archive> a) {   // a pipeline was found in a: this compaction takes that file (every run file without a pick, as before)
@@ -9437,7 +9477,8 @@ static void pso4_init(void) {
                     if (ae) why[i] = ae.localizedDescription ?: @"";
                 }
             } });
-            NSMutableArray<id<MTL4Archive>> *ixf = [NSMutableArray array], *run = [NSMutableArray array]; int nopen = 0, np = 0, nidx = 0; unsigned long nkeys = 0;
+            NSMutableArray<id<MTL4Archive>> *ixf = [NSMutableArray array], *run = [NSMutableArray array]; int nopen = 0, np = 0, nidx = 0, nkept = 0; unsigned long nkeys = 0;
+            unsigned char *indexed = calloc(nn + 1, 1);   // per run file (runf's order): its index is complete, so no compaction takes it (arch_compact_pick)
             for (NSUInteger i = 0; i < nn; i++) {
                 NSString *n = names[i], *p = [g_arch_dir stringByAppendingPathComponent:n]; int pf = [n hasPrefix:@"p"];
                 g_arch_seq = MAX(g_arch_seq, [n substringFromIndex:pf].intValue + 1);
@@ -9448,16 +9489,16 @@ static void pso4_init(void) {
                 id<MTL4Archive> a = opened[i]; NSArray *ix = ixs[i] != NSNull.null ? ixs[i] : nil;
                 bytes += [[NSFileManager.defaultManager attributesOfItemAtPath:p error:nil] fileSize];
                 nopen++; np += pf; nidx += ix != nil;
-                if (!pf) { [runf addObject:p]; [run addObject:a]; }
+                if (!pf) { if (indexed && ix && [ix[1] intValue]) { indexed[runf.count] = 1; nkept++; } [runf addObject:p]; [run addObject:a]; }
                 if (!ix) { [pf ? archp : arch addObject:a]; continue; }
                 NSData *keys = ix[0]; const uint64_t *kv = keys.bytes; NSUInteger nk = keys.length / sizeof(uint64_t);
                 for (NSUInteger j = 0; j < nk; j++) if (!nvn_hm_get(&g_arch_ix, &kv[j])) { nvn_hm_put(&g_arch_ix, &kv[j], (__bridge void *)a); nkeys++; }   // newest first: the first holds it
                 if ([ix[1] intValue]) [ixf addObject:a]; else [pf ? archp : arch addObject:a];   // an incomplete index: its pipelines with no key are looked for in it
             }
             g_arch_ixf = ixf; g_arch_run = run;
-            arch_compact_pick(runf);
-            MLOG("pipeline archive %s: %d files (%d of bases without a vertex layout, %d with an index of %lu pipelines), %.1f MB, opened in %.1f ms", g_arch_dir.UTF8String,
-                 nopen, np, nidx, nkeys, bytes / 1048576.0, (bp_now() - t0) / 1e6);
+            arch_compact_pick(runf, indexed); free(indexed);
+            MLOG("pipeline archive %s: %d files (%d of bases without a vertex layout, %d with an index of %lu pipelines), %.1f MB, opened in %.1f ms; %d run files with a complete index left out of any compaction (DM_PSO_COMPACT=%d)%s", g_arch_dir.UTF8String,
+                 nopen, np, nidx, nkeys, bytes / 1048576.0, (bp_now() - t0) / 1e6, arch_compact_mode() == 1 ? 0 : nkept, arch_compact_mode(), g_compact_enabled ? "; this start compacts the others" : "");
         }
         arch_open_end();
         g_arch4 = arch; g_arch4p = archp;

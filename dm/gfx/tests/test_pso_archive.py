@@ -50,7 +50,8 @@ class ArchiveRestartTests(unittest.TestCase):
     def test_compaction_with_fresh_bases_and_restart(self):
         for constants in (False, True):
             with self.subTest(constants=constants), tempfile.TemporaryDirectory(prefix='pso-restart-') as folder:
-                env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1', DM_TEST_ARCHIVE_MIXED='1')
+                # DM_PSO_COMPACT=1: the compaction of every run file, indexed or not (by default an indexed file is never compacted: t_pso_compact)
+                env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1', DM_TEST_ARCHIVE_MIXED='1', DM_PSO_COMPACT='1')
                 for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS'):
                     env.pop(name, None)
                 if constants:
@@ -83,7 +84,7 @@ class ArchiveRestartTests(unittest.TestCase):
 
     def test_tier_compaction_restart(self):
         with tempfile.TemporaryDirectory(prefix='pso-tier-') as folder:
-            env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1')
+            env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1', DM_PSO_COMPACT='1')   # every run file, indexed or not (t_pso_compact checks the default)
             for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED'):
                 env.pop(name, None)
             # a full period's file and nine of one base; the nine become a file per period of 4; then nothing to compact
