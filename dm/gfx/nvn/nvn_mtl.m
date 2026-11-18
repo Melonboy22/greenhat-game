@@ -3330,18 +3330,21 @@ static nvn_hmap g_soft_hard = {.klen = 8};   // storage addresses of textures ke
 // (soft_report, every 300 frames, with the clock time to match against when the ground went wrong); the first of each kind for each storage address is logged with the
 // texture, up to SE_CAP of that kind. SE_STALE: the storage was made whole (soft_harden marks the address) but another object over it still has its soft host texture,
 // whose levels no longer move (tex_soft_n is 0 there now); SE_VIEW_STALE: a texture ID's view of such a texture with a base level, which the view does not move either.
-// DM_NVN_SOFT_LOG=0 keeps the counts and drops the lines
-enum { SE_MADE, SE_REUP, SE_HARD_COPY_FROM, SE_HARD_READBACK, SE_HARD_COPY_INTO, SE_HARD_BC_ALIAS, SE_HARD_T2T_SRC, SE_HARD_T2T_DST, SE_HARD_OTHER,
+// SE_HARD_SHARED: an object that is not soft resolved to a soft package (pkg_of), which is made whole then (tex_mtl_). The first play with the log (c81de65c, docked, the ground
+// crosshatched at 15:28) had no texture made whole by any path and no STALE, but one package re-uploaded whole by such an object at 15:28:04 (a 512x512 BC4 texture,
+// SE_STALE_REUP); it was the one object of that kind that wrote its storage, and the others were not counted. DM_NVN_SOFT_LOG=0 keeps the counts and drops the lines
+enum { SE_MADE, SE_REUP, SE_HARD_COPY_FROM, SE_HARD_READBACK, SE_HARD_COPY_INTO, SE_HARD_BC_ALIAS, SE_HARD_T2T_SRC, SE_HARD_T2T_DST, SE_HARD_OTHER, SE_HARD_SHARED,
        SE_STALE, SE_STALE_REUP, SE_VIEW_REMAP, SE_VIEW_STALE, SE_SKIP, SE_N };
 static const char *const g_se_name[SE_N] = {
     "made soft", "uploaded again soft (the game wrote its storage)", "made whole: the game copies from it", "made whole: the game reads it back",
     "made whole: the game copies into it", "made whole: a block-compressed copy into an alias of it", "made whole: a texture copy's source",
     "made whole: a texture copy's destination", "made whole",
+    "made whole: an object over its storage that is not soft (an image, one with no packaged layout, or its storage made whole by another) resolved to it",
     "STALE: its storage was made whole but this object still has the soft host texture (its levels no longer move)",
     "stale soft host texture replaced by a whole one at an upload", "view of a soft texture: its base level moved down",
     "STALE VIEW: a view with a base level of a soft host texture whose storage was made whole (the level does not move)",
     "copy skipped: it names a level the soft texture left out" };
-static const unsigned g_se_cap[SE_N] = {24, 160, 60, 60, 60, 60, 60, 60, 60, 120, 60, 16, 60, 40};
+static const unsigned g_se_cap[SE_N] = {24, 160, 60, 60, 60, 60, 60, 60, 60, 60, 120, 60, 16, 60, 40};
 static _Atomic uint64_t g_se_n[SE_N]; static unsigned g_se_lines[SE_N];
 static os_unfair_lock g_se_lk = OS_UNFAIR_LOCK_INIT; static nvn_hmap g_se_seen = {.klen = 16};   // {storage address, event}: logged already
 static uint64_t g_se_t0;
@@ -3359,8 +3362,9 @@ static void soft_event(int ev, const tex_t *t) {
     os_unfair_lock_unlock(&g_se_lk);
     if (!print) return;
     char clk[16]; double secs; soft_clock(clk, sizeof clk, &secs);
-    MLOG("soft texture %s, frame %llu (%.1f s, %s): ser=%llu %ux%ux%u, %u levels, format %#x, target %d, storage %p, pool %p",
-         g_se_name[ev], (unsigned long long)atomic_load(&g_cur_frame), secs, clk, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target, t->mem, (void *)t->pool);
+    MLOG("soft texture %s, frame %llu (%.1f s, %s): ser=%llu %ux%ux%u, %u levels, format %#x, target %d, flags %#x, packaged layout %d, storage %p, pool %p",
+         g_se_name[ev], (unsigned long long)atomic_load(&g_cur_frame), secs, clk, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target,
+         t->d.flags, t->has_layout, t->mem, (void *)t->pool);
 }
 static int soft_addr_hard(const tex_t *t) {   // its storage was made whole (soft_harden). Caller does not hold g_smu
     if (!t || !t->mem || !g_soft_hard.n) return 0;
@@ -3370,14 +3374,15 @@ static void soft_report(unsigned long long frame) {
     uint64_t n[SE_N]; for (int i = 0; i < SE_N; i++) n[i] = atomic_load(&g_se_n[i]);
     if (!n[SE_MADE]) return;
     char clk[16]; double secs; soft_clock(clk, sizeof clk, &secs);
-    MLOG("soft textures up to frame %llu (%.1f s, %s): made %llu, uploaded again %llu; made whole %llu (copied from %llu, read back %llu, copied into %llu, BC alias copies %llu, texture copies from %llu / into %llu); STALE soft host textures seen %llu (replaced at an upload %llu); views moved down %llu, STALE views %llu; copies skipped %llu",
+    MLOG("soft textures up to frame %llu (%.1f s, %s): made %llu, uploaded again %llu; made whole %llu (copied from %llu, read back %llu, copied into %llu, BC alias copies %llu, texture copies from %llu / into %llu, objects over it not soft %llu); STALE soft host textures seen %llu (replaced at an upload %llu); views moved down %llu, STALE views %llu; copies skipped %llu",
          frame, secs, clk, (unsigned long long)n[SE_MADE], (unsigned long long)n[SE_REUP],
-         (unsigned long long)(n[SE_HARD_COPY_FROM] + n[SE_HARD_READBACK] + n[SE_HARD_COPY_INTO] + n[SE_HARD_BC_ALIAS] + n[SE_HARD_T2T_SRC] + n[SE_HARD_T2T_DST] + n[SE_HARD_OTHER]),
+         (unsigned long long)(n[SE_HARD_COPY_FROM] + n[SE_HARD_READBACK] + n[SE_HARD_COPY_INTO] + n[SE_HARD_BC_ALIAS] + n[SE_HARD_T2T_SRC] + n[SE_HARD_T2T_DST] + n[SE_HARD_OTHER] + n[SE_HARD_SHARED]),
          (unsigned long long)n[SE_HARD_COPY_FROM], (unsigned long long)n[SE_HARD_READBACK], (unsigned long long)n[SE_HARD_COPY_INTO], (unsigned long long)n[SE_HARD_BC_ALIAS],
-         (unsigned long long)n[SE_HARD_T2T_SRC], (unsigned long long)n[SE_HARD_T2T_DST], (unsigned long long)n[SE_STALE], (unsigned long long)n[SE_STALE_REUP],
+         (unsigned long long)n[SE_HARD_T2T_SRC], (unsigned long long)n[SE_HARD_T2T_DST], (unsigned long long)n[SE_HARD_SHARED], (unsigned long long)n[SE_STALE], (unsigned long long)n[SE_STALE_REUP],
          (unsigned long long)n[SE_VIEW_REMAP], (unsigned long long)n[SE_VIEW_STALE], (unsigned long long)n[SE_SKIP]);
 }
-static int tex_soft(const tex_t *t) {
+// What tex_soft decides from the object alone (no lock): its kind, size and format, not whether its storage was made whole since
+static int tex_soft_kind(const tex_t *t) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_TEX_SOFT"); on = e && *e ? atoi(e) != 0 : DM_GAME_TEX_SOFT; if (on) MLOG("large block-compressed textures kept without their finest level (profile tex_soft; DM_NVN_TEX_SOFT=0 turns it off)"); }
     // DM_NVN_TEX_SOFT_ARRAYS=0 (profile tex_soft_arrays off): 2D arrays stay whole too. Ocarina of Time's reflection probes are one: its water under Kokiri Forest's canopy showed flat sky
     static int arrays = -1; if (arrays < 0) { const char *e = getenv("DM_NVN_TEX_SOFT_ARRAYS"); arrays = e && *e ? atoi(e) != 0 : DM_GAME_TEX_SOFT_ARRAYS; }
@@ -3388,6 +3393,10 @@ static int tex_soft(const tex_t *t) {
     if (t->pool && t->pool->magic == MAGIC('P', 'O', 'O', 'L') && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL)) return 0;   // a sparse pool's: tiles that follow the game's mappings
     if (MAX(t->d.width, t->d.height) < 512 || MIN(t->d.width, t->d.height) < 256) return 0;
     int bw, bh; if (!nvn_fmt_bpb(t->d.format, &bw, &bh) || bw < 2) return 0;
+    return 1;
+}
+static int tex_soft(const tex_t *t) {
+    if (!tex_soft_kind(t)) return 0;
     uint64_t k = (uint64_t)(uintptr_t)t->mem; pthread_mutex_lock(&g_smu); int hard = nvn_hm_get(&g_soft_hard, &k) != NULL; pthread_mutex_unlock(&g_smu);
     return !hard;
 }
@@ -3400,11 +3409,28 @@ static unsigned tex_soft_n(const tex_t *t) {
     unsigned n = 1; while (n < (unsigned)want && t->d.levels > n + 2 && (MIN(t->d.width, t->d.height) >> (n + 1)) >= 128) n++;
     return n;
 }
-// A level the game names, as the host texture's level: 0 when there is none (a left-out level of a soft texture)
-static int tex_soft_level(const tex_t *t, unsigned *level) { unsigned k = tex_soft_n(t); if (!k) return 1; if (*level < k) return 0; *level -= k; return 1; }
-// The same for a host texture in hand: only a texture made soft (narrower than the game's) has its levels moved. A texture that passes tex_soft but was not made from the game's
-// files (a GPU-written BC render target, bcrt_attach) has every level
-static int tex_soft_level_mt(const tex_t *t, id<MTLTexture> mt, unsigned *level) { if (!t || !mt || mt.width >= MAX(t->d.width, 1u)) return 1; return tex_soft_level(t, level); }
+// The packaged texture an object resolves to: its own entry, else the one another object over the same bytes made (pkg_shared; tex_mtl_ takes it at the object's first lookup)
+static NvPkg *pkg_of(const tex_t *t) {
+    id o = tex_get(t->serial); if (!o) return pkg_shared(t);
+    return [o isKindOfClass:[NvPkg class]] ? o : nil;
+}
+// How many of the game's finest levels a host texture in hand leaves out. A package is shared by every object over the same storage of the same description but the IMAGE flag
+// (pkg_shared, tex_alias_key), and tex_soft decides per object: an image, or one with no packaged layout, over a package another object made soft had its levels taken as the game's
+// (tex_soft_n of it is 0), so a copy into its level 0 or a read back of it landed in the soft texture's level 0, four times too large, and soft_harden passed it over. So the
+// package's own count (NvPkg soft_k, set with its texture) decides when mt is its texture; another texture narrower than the game's (not a package's) takes tex_soft_n as before
+static unsigned host_soft_k(const tex_t *t, id<MTLTexture> mt) {
+    if (!t || !mt || mt.width >= MAX(t->d.width, 1u)) return 0;
+    NvPkg *pk = pkg_of(t);
+    if (pk && !pk->sparse && pk->tex && (pk->tex == mt || mt.parentTexture == pk->tex)) return pk->soft_k;
+    return tex_soft_n(t);
+}
+// A level the game names, as the level of the host texture in hand: 0 when there is none (a left-out level of a soft texture). Only a texture made soft (narrower than the game's)
+// has its levels moved; a texture that passes tex_soft but was not made from the game's files (a GPU-written BC render target, bcrt_attach) has every level
+static int tex_soft_level_mt(const tex_t *t, id<MTLTexture> mt, unsigned *level) {
+    unsigned k = host_soft_k(t, mt); if (!k) return 1;
+    if (*level < k) return 0;
+    *level -= k; return 1;
+}
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "texture format %#x has no Metal equivalent (first case)", t->d.format); return nil; }
@@ -5043,12 +5069,15 @@ static void rt_lossy(MTLTextureDescriptor *d) {
 }
 // The game copies from this texture, copies into it (a texture streamed in by copies: a skipped level-0 copy left Kakariko's ground showing what was there before) or reads it back: if it is soft (tex_soft), it goes whole from here on, uploaded again now with its finest level, which its storage still holds.
 // The soft texture becomes the spare (in-flight draws may still read it)
+// Also when this object would not be soft itself but the package it resolves to is (pkg_of: made by another object over the storage, host_soft_k): before, such an object was passed
+// over, and its copy or read back went into the soft texture at the game's level
 static void soft_harden_by(const tex_t *t, int why) {   // why: the SE_HARD_* event
-    if (!t || !tex_soft(t) || (t->pool && t->pool->magic != MAGIC('P', 'O', 'O', 'L'))) return;
-    id have = tex_get(t->serial); NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;
+    if (!t || !t->mem || (t->pool && t->pool->magic != MAGIC('P', 'O', 'O', 'L'))) return;
+    NvPkg *pk = pkg_of(t);
+    if (!tex_soft(t) && !(pk && !pk->sparse && pk->soft_k)) return;
     uint64_t k = (uint64_t)(uintptr_t)t->mem; pthread_mutex_lock(&g_smu); nvn_hm_put(&g_soft_hard, &k, (void *)1); pthread_mutex_unlock(&g_smu);
     soft_event(why, t);
-    if (!pk || pk->sparse) return;
+    if (!pk || pk->sparse || !pk->soft_k) return;   // a package already whole (made by an object that is not soft) keeps its texture
     uint64_t st; id<MTLTexture> nt = pkg_upload(t, &st, nil, pk->tex.usage);
     if (!nt) return;
     if (pk->spare) defer_obj_release(pk->spare);
@@ -5111,6 +5140,13 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
             if (atomic_load(&g_sub_thread_set) && !on_sub_thread()) return pk->view ? pk->view : pk->tex;
             if (g_nabs) pkg_absorb_take(pk, t);
             if (g_nabsp && pkg_absorb_waits(t->serial)) return pk->view ? pk->view : pk->tex;
+            // A soft package and an object over it that would not be soft (an image or one with no packaged layout, which share it: tex_alias_key; or its storage made whole by another
+            // object since, SE_STALE): the storage goes whole, so every object over it has one shape and this one's copies, reads back and GPU writes land at the game's levels.
+            // Ocarina of Time's crosshatched ground came with one (a 512x512 BC4 texture, oot-plus c81de65c, 2026-11-18). The lock-free kind check first: most lookups stop there
+            if (!pk->sparse && pk->soft_k && (!tex_soft_kind(t) || (g_soft_hard.n && soft_addr_hard(t)))) {
+                if (tex_soft_kind(t)) soft_event(SE_STALE, t);
+                soft_harden_by(t, SE_HARD_SHARED);
+            }
             uint64_t now = nvn_dirty_now();
             int tracked = pk->span != NULL;   // kept from the upload: a texture's pool stays registered while the texture lives
             int clean = tracked && (now == pk->seen || !nvn_dirty_since_span(pk->span, t->mem, t->L.size, pk->stamp));
@@ -5119,7 +5155,6 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
             else if (pk->sparse) { uint64_t g = nvn_sparse_gen(); clean = (now == pk->seen && g == pk->vseen) || !nvn_sparse_since(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size, pk->vgen, pk->stamp); pk->vseen = g; pk->sub = g_sub_serial; }
             pk->seen = now;
             if (clean && atomic_load_explicit(&g_up_lost_n, memory_order_relaxed) && up_lost_take(pk->tex)) { clean = 0; uint64_t k = atomic_load(&g_up_lost_redo); if (k <= 3 || !atomic_load(&g_up_lost_n)) MLOG("re-uploading a texture whose upload was dropped ser=%llu (%llu in total, %d left in the record)", (unsigned long long)t->serial, (unsigned long long)k, atomic_load(&g_up_lost_n)); }
-            if (pk->soft_k && g_soft_hard.n && !pk->sparse && soft_addr_hard(t)) soft_event(SE_STALE, t);   // (logged only: soft_report)
             if (clean) {
                 if (dirtycheck() && !pk->sparse && full_hash(t->mem, t->L.size) != pk->hash && !g_pkg_miss++)
                     MLOG("[RED] dirty-page miss: texture ser=%llu pool content changed but was not detected", t->serial);
@@ -7590,7 +7625,8 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
             sg = treg_ep();
         }
         NSUInteger l0 = r.v.set_levels ? r.v.base_level : 0, nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : base.mipmapLevelCount - l0;
-        if (l0 && tex_soft(&rp->t) && base.width < rp->t.d.width) { unsigned k = tex_soft_n(&rp->t); l0 = l0 > k ? l0 - k : 0; if (!r.v.nlevels) nl = base.mipmapLevelCount - l0; soft_event(SE_VIEW_REMAP, &rp->t); }
+        unsigned vk = l0 ? host_soft_k(&rp->t, base) : 0;   // what the host texture leaves out, whichever object over its storage made it soft
+        if (vk) { l0 = l0 > vk ? l0 - vk : 0; if (!r.v.nlevels) nl = base.mipmapLevelCount - l0; soft_event(SE_VIEW_REMAP, &rp->t); }
         else if (l0 && rp->t.has_layout && base.width < rp->t.d.width && soft_addr_hard(&rp->t)) soft_event(SE_VIEW_STALE, &rp->t);   // (logged only: soft_report)   // a soft texture has no level 0: a view of it starts at what is level 0 here, one level less
         if (l0 >= base.mipmapLevelCount) { RED_ONCE(109, "texture view id %d starts at mip %lu beyond %lu levels", tid, (unsigned long)l0, (unsigned long)base.mipmapLevelCount); return nil; }
         // A level count past the texture's levels is cut to those it has, as deko3d's Tegra descriptor writer clips the maximum level (Echoes of Wisdom: levels 1 + 7 of a seven-level texture,
@@ -15618,6 +15654,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
 // take): a view's copies land in the storage it is made on. One the GPU may render or store into does not: a GPU write makes it a GPU texture (cpu_unc_drop)
 static int tex_storage_dst(const tex_t *t) {
     if (tex_soft(t)) return 0;   // its host levels are not the game's: nothing reads a soft texture back into its storage
+    { NvPkg *pk = pkg_of(t); if (pk && !pk->sparse && pk->soft_k) return 0; }   // nor one another object over the storage made soft (host_soft_k)
     if (!t->mem || !t->pool || (t->pool->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) || t->d.samples > 1 || t->d.target == NVN_TEXTURE_TARGET_BUFFER
         || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE))
         || ((t->d.flags & NVN_TEXTURE_FLAGS_LINEAR) && !tex_cpu_written(t->serial))) return 0;
