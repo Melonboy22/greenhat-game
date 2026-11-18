@@ -3054,13 +3054,14 @@ static unsigned ghost_trim(int force) {
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
 // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
-@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t used; unsigned soft_k; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, sub, copies; const void *span; int sparse, vbase; uint8_t *edge[2]; uint32_t edge_n[2]; id ps; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
+@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t used; unsigned soft_k; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, sub, copies; const void *span; int sparse, vbase; uint8_t *edge[2]; uint32_t edge_n[2]; id ps; uint64_t *ph, up_frame, up_sub; uint32_t nph, missed; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
 // sparse: in a sparse virtual pool, read through its page table (hle_nvn.c nvn_sparse_*), vgen the page table's generation at the upload and vseen at the last look; view: what it is bound as (sparse_view)
 // ps: its placement sparse texture (NvSparse, sparse_make), which tex is: mapped and uploaded tile by tile (sparse_sync)
 // edge: the uploaded bytes of the storage's first and last host pages where other data shares them (pkg_edges_take)
 // Its release retires its textures (defer_obj_release, not res_remove at once): serials that took its texture over (cpu_unc_drop) keep it resident (defer_drain)
+// ph, nph, up_frame, up_sub, missed: under DM_NVN_DIRTYCHECK, the hash of its bytes in each host page, the frame and submission of the upload, and whether a miss was reported (pkg_hash_take)
 @implementation NvPkg
-- (void)dealloc { defer_obj_release(tex); defer_obj_release(spare); free(edge[0]); free(edge[1]); }
+- (void)dealloc { defer_obj_release(tex); defer_obj_release(spare); free(edge[0]); free(edge[1]); free(ph); }
 @end
 // What the ghost table keeps for GHOST_IDLE_KEPT frames rather than GHOST_IDLE: anything but a packaged texture (a render target or a texture the GPU wrote: made again from storage it
 // would read cleared) and a sparse packaged one (its tiles follow the game's mappings). A packaged texture's content is in its storage, so made again it is the same
@@ -3198,6 +3199,45 @@ static uint64_t g_pfv_upgrades;
 // DM_NVN_DIRTYCHECK=1 (diagnostic, compared against ground truth): fully hash the pool content on every use; changed but not detected by dirty-page tracking = a missed detection
 static int dirtycheck(void) { static int v = -1; if (v < 0) v = getenv("DM_NVN_DIRTYCHECK") != NULL; return v; }
 static uint64_t full_hash(const uint8_t *m, uint64_t n) { uint64_t h = 1469598103934665603ull; for (uint64_t i = 0; i < n; i++) h = (h ^ m[i]) * 1099511628211ull; return h; }
+// Under DM_NVN_DIRTYCHECK, at an upload (or when the host takes the storage's content as its own, pkg_copy_absorb): the hash of the whole content, and of the texture's bytes in each
+// host page, so a miss can name the pages that changed (pkg_miss_report). Upstream 32faef7c
+static void pkg_hash_take(NvPkg *pk, const tex_t *t) {
+    if (!dirtycheck() || pk->sparse) return;
+    pk->hash = full_hash(t->mem, t->L.size);
+    uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)t->mem, e = a + t->L.size, p0 = a & ~(pg - 1);
+    uint32_t n = (uint32_t)((e - p0 + pg - 1) / pg);
+    if (n != pk->nph) { free(pk->ph); pk->ph = malloc(n * sizeof *pk->ph); pk->nph = pk->ph ? n : 0; }
+    for (uint32_t i = 0; i < pk->nph; i++) { uintptr_t lo = MAX(a, p0 + i * pg), hi = MIN(e, p0 + (i + 1) * pg); pk->ph[i] = full_hash((const uint8_t *)lo, hi - lo); }
+    pk->up_frame = atomic_load(&g_cur_frame); pk->up_sub = g_sub_serial; pk->missed = 0;
+}
+// A texture whose content changed with no write the tracker saw (DM_NVN_DIRTYCHECK): the first 16, once each. Which of its host pages changed, where they lie in it, and for the first
+// few what the tracker and the kernel hold for that page (nvn_dirty_describe), which tells a write that never faulted from a page whose protection was lost
+static int g_pkg_miss_reports;
+static void pkg_miss_report(NvPkg *pk, const tex_t *t, uint64_t now) {
+    if (pk->missed || g_pkg_miss_reports >= 16) return;
+    pk->missed = 1; g_pkg_miss_reports++;
+    uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)t->mem, e = a + t->L.size, p0 = a & ~(pg - 1);
+    uint32_t changed = 0, first = UINT32_MAX, last = 0;
+    for (uint32_t i = 0; i < pk->nph; i++) { uintptr_t lo = MAX(a, p0 + i * pg), hi = MIN(e, p0 + (i + 1) * pg);
+        if (full_hash((const uint8_t *)lo, hi - lo) != pk->ph[i]) { changed++; if (first == UINT32_MAX) first = i; last = i; } }
+    const void *now_span = nvn_dirty_span(t->mem, t->L.size);
+    MLOG("[RED] dirty-page miss: texture ser=%llu %ux%ux%u format %#x target %d levels %u, %llu bytes at %p: its content changed with no write seen; %u of its %u host pages changed (pages %d-%d), "
+         "uploaded at frame %llu submission %llu (now %llu, %llu), stamp %llu, clock %llu, GPU copies taken as its content %llu, soft %u, kept range %p, range now %p",
+         (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, (unsigned long long)t->L.size, (void *)t->mem, changed, pk->nph,
+         first == UINT32_MAX ? -1 : (int)first, first == UINT32_MAX ? -1 : (int)last, (unsigned long long)pk->up_frame, (unsigned long long)pk->up_sub,
+         (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_sub_serial, (unsigned long long)pk->stamp, (unsigned long long)now, (unsigned long long)pk->copies, pk->soft_k, pk->span, now_span);
+    int shown = 0;
+    for (uint32_t i = 0; i < pk->nph && shown < 6; i++) {
+        uintptr_t lo = MAX(a, p0 + i * pg), hi = MIN(e, p0 + (i + 1) * pg);
+        if (full_hash((const uint8_t *)lo, hi - lo) == pk->ph[i]) continue;
+        shown++;
+        uint64_t o = lo - a; unsigned layer = t->L.layer_size ? (unsigned)(o / t->L.layer_size) : 0, lv = 0; uint64_t ol = t->L.layer_size ? o % t->L.layer_size : o;
+        while (lv + 1 < t->d.levels && nvn_tex_level_offset(&t->d, lv + 1) <= ol) lv++;
+        char d[512]; nvn_dirty_describe((const void *)lo, pk->span, d, sizeof d);
+        MLOG("[RED] dirty-page miss ser=%llu page %u (%p, its bytes %#llx-%#llx, layer %u level %u): %s", (unsigned long long)t->serial, i, (void *)(p0 + i * pg), (unsigned long long)o,
+             (unsigned long long)(hi - a), layer, lv, d);
+    }
+}
 // Writes beside a texture. The tracker marks whole host pages (16 KB) dirty, and guest memory pools are only 4 KB aligned: the first and last pages of a texture's storage are shared with
 // whatever lies beside it. Pokémon Sword keeps each texture of its GFPAK models in a pool of its own, with the pool's object 4 KB before the storage, in the same host page, and writes there
 // every frame: 73,232 re-uploads in 70 s of play from a save, every one checked of unchanged content, 12 GB of upload staging in 8 minutes. So the bytes of the storage in those edge pages
@@ -3258,7 +3298,7 @@ static int pkg_copy_absorb(const tex_t *t, id<MTLTexture> host, unsigned level, 
     if (ex != stack) free(ex);
     if (!ok) return 0;
     pk->stamp = pk->seen = st; pk->copies--; g_pkg_copy_absorbs++;
-    if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
+    pkg_hash_take(pk, t);
     pkg_edges_take(pk, t);   // the edge bytes as they are now, the copy's included
     return 1;
 }
@@ -3308,7 +3348,7 @@ static void pkg_absorb_take(NvPkg *pk, const tex_t *t) {
     int ok = tex == pk->tex && pk->span && !pk->sparse && !(ie > ia && nvn_dirty_since_span(pk->span, (const void *)ia, ie - ia, e.stamp));
     for (int k = 0; k < 2 && ok; k++) ok = e.edge_n[k] == (r[k][1] > r[k][0] ? r[k][1] - r[k][0] : 0) && (!e.edge_n[k] || !memcmp(e.edge[k], (const void *)r[k][0], e.edge_n[k]));
     if (ok) {
-        pk->stamp = pk->seen = e.stamp; pk->copies++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
+        pk->stamp = pk->seen = e.stamp; pk->copies++; pkg_hash_take(pk, t);
         for (int k = 0; k < 2; k++) { free(pk->edge[k]); pk->edge[k] = e.edge[k]; pk->edge_n[k] = e.edge_n[k]; e.edge[k] = NULL; }   // the bytes as written: a neighbour's write in an edge page is judged by them (pkg_edges_clean)
     }
     free(e.edge[0]); free(e.edge[1]);
@@ -5045,7 +5085,7 @@ static void soft_harden(const tex_t *t) {
     // Other objects over the storage share the package (pkg_shared) and their texture IDs still name the soft texture, now the spare, which the guard may let go (pkg_trim): no
     // guest write tells their views to look again, so a change with no note starts a new epoch and every ID resolves again at the next walk (ser_sync). Rare: once per storage
     atomic_fetch_add(&g_ser_gen, 1);
-    if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
+    pkg_hash_take(pk, t);
     pkg_edges_take(pk, t);
 }
 static _Atomic uint64_t g_stat_ghost_skip;
@@ -5117,8 +5157,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
             pk->seen = now;
             if (clean && atomic_load_explicit(&g_up_lost_n, memory_order_relaxed) && up_lost_take(pk->tex)) { clean = 0; uint64_t k = atomic_load(&g_up_lost_redo); if (k <= 3 || !atomic_load(&g_up_lost_n)) MLOG("re-uploading a texture whose upload was dropped ser=%llu (%llu in total, %d left in the record)", (unsigned long long)t->serial, (unsigned long long)k, atomic_load(&g_up_lost_n)); }
             if (clean) {
-                if (dirtycheck() && !pk->sparse && full_hash(t->mem, t->L.size) != pk->hash && !g_pkg_miss++)
-                    MLOG("[RED] dirty-page miss: texture ser=%llu pool content changed but was not detected", t->serial);
+                if (dirtycheck() && !pk->sparse && full_hash(t->mem, t->L.size) != pk->hash) { g_pkg_miss++; pkg_miss_report(pk, t, now); }
                 return pk->view ? pk->view : pk->tex;
             }
             if (!pk->sparse && pkg_edges_clean(pk, t)) return pk->view ? pk->view : pk->tex;   // only the pages it shares with other data were written
@@ -5133,7 +5172,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
                 if (pk->spare && pk->spare != nt) defer_obj_release(pk->spare);   // still in use, or of another shape: retired
                 if (pk->sparse) sparse_view(pk, t);
                 zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "re-upload");
-                pk->spare = old; pk->spare_fence = g_fence + 1; ser_note(t->serial); pk->stamp = st; pk->vgen = pk->vseen = vg; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = st; g_pkg_reuploads++; if (dirtycheck() && !pk->sparse) pk->hash = full_hash(t->mem, t->L.size); pkg_edges_take(pk, t); }
+                pk->spare = old; pk->spare_fence = g_fence + 1; ser_note(t->serial); pk->stamp = st; pk->vgen = pk->vseen = vg; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = st; g_pkg_reuploads++; pkg_hash_take(pk, t); pkg_edges_take(pk, t); }
             return pk->view ? pk->view : pk->tex;
         }
         pk = [NvPkg new];
@@ -5142,7 +5181,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
         if (!pk->tex) return nil;
         pk->soft_k = tex_soft_n(t);
         pk->span = nvn_dirty_span(t->mem, t->L.size);
-        pk->seen = pk->stamp; g_pkg_uploads++; if (dirtycheck() && !pk->sparse) pk->hash = full_hash(t->mem, t->L.size);   // "nothing written since" starts at the stamp: a write that faulted during the upload moved "now" past it
+        pk->seen = pk->stamp; g_pkg_uploads++; pkg_hash_take(pk, t);   // "nothing written since" starts at the stamp: a write that faulted during the upload moved "now" past it
         pkg_edges_take(pk, t);
         if (pk->sparse) sparse_view(pk, t);
         zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "upload");

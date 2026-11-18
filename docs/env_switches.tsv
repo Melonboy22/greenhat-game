@@ -158,7 +158,7 @@ DM_NVN_DEFER	switch	`0` turns off the deferred pass merging of the TBDR optimiza
 DM_NVN_DEFER_AB	diagnostic	`=1` keeps the deferred pass merging (with `DM_NVN_TBDR=1`) off until the second screenshot has been written, then turns it on, to compare the pictures with and without it
 DM_NVN_DEPTHOVR	diagnostic	`=<fragment shader key prefix>,…`: those draws compare depth with `ALWAYS`; with `DM_NVN_HILITE`, tells "the depth test rejects every fragment" from "nothing rasterizes"
 DM_NVN_DIRECT_UPLOAD	switch	0 disables bounded direct RGBA16F array uploads and keeps staged copies; on by default for supported non-sparse textures.
-DM_NVN_DIRTYCHECK	diagnostic	`=1` fully hashes pool content on every use to find changes the dirty-page tracking missed
+DM_NVN_DIRTYCHECK	diagnostic	`=1` fully hashes pool content on every use to find changes the dirty-page tracking missed; each missed texture (the first 16) gets a `[RED] dirty-page miss` line naming the host pages that changed and, for each, every pool range over it (state, generation, registration) and the kernel's protection of it
 DM_NVN_DISPATCH_CLAMP	switch	`0` turns off the clamp of GPU-written indirect dispatch counts (a record of more than 2^22 threadgroups in all dispatches nothing); garbage counts hang the GPU without it
 DM_NVN_DISPATCH_OVERLAP	switch	`1` runs the game's compute dispatches with no barrier of its and nothing else between them side by side in the copy encoder, as NVN allows; `0` orders each after the one before (the default unless the profile sets dispatch_overlap: Ocarina of Time does)
 DM_NVN_DISPATCH_OWN	switch	`=1` gives every compute dispatch a compute encoder of its own with full barriers, as before (by default dispatches share the copy encoder); `DM_NVN_PASSGPU` does the same
