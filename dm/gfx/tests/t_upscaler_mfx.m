@@ -94,7 +94,8 @@ int main(void) { @autoreleasepool {
     CHECK(color_of(dec, 2, NULL, 0) == UP_COLOR_KEEP, "a shape no pack has shown (a decode in floats, no encode): the shader runs");
     CHECK(color_of(NULL, 0, (const float[4]){0.040435791015625f, 2.3984375f, 0.07745361328125f, enc16[0]}, 4) == UP_COLOR_KEEP, "a half float encode must not read as encoded input: the shader runs");
     CHECK(up_mfx_color(rare, sizeof rare) != UP_COLOR_SRGB, "a constant used once is chance, not a curve");
-    const char *up = getenv("DM_UPSCALER"); int on = up && !strcmp(up, "metalfx");
+    const char *up = getenv("DM_UPSCALER"); if (!up || !*up) up = DM_GAME_START_UPSCALE;   // unset: the profile's upscaler key, as up_mfx_on takes it (Ocarina of Time starts on metalfx)
+    int on = !strcmp(up, "metalfx");
     tex_t in = texture(77, 960, 540, NVN_FORMAT_RGBA16F), out = texture(78, 1920, 1080, NVN_FORMAT_RGBA16F), same = texture(79, 960, 540, NVN_FORMAT_RGBA16F);
     out.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; same.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
     mtl_tex_init(&in); mtl_tex_init(&out); mtl_tex_init(&same);
@@ -103,7 +104,7 @@ int main(void) { @autoreleasepool {
     fill(tex_mtl(&in), MTLClearColorMake(colour[0], colour[1], colour[2], colour[3])); fill(tex_mtl(&out), MTLClearColorMake(0, 0, 0, 1));
     char key[24] = "7629d857a0a93833_b"; if (DM_GAME_UPSCALER_N) snprintf(key, sizeof key, "%.16s_b", DM_GAME_UPSCALER_KEYS);   // the profile's first upscaler, else Bananza's (not named here)
     NvShader *named = upscaler(key), *other = upscaler("0123456789abcdef_b");
-    CHECK(up_mfx_wanted(named) == (on && DM_GAME_UPSCALER_N), "a shader the profile names is swapped exactly when DM_UPSCALER=metalfx (none in a profile without upscalers)");
+    CHECK(up_mfx_wanted(named) == (on && DM_GAME_UPSCALER_N), "a shader the profile names is swapped exactly when the upscaler is metalfx (DM_UPSCALER, else the profile's; none in a profile without upscalers)");
     CHECK(!up_mfx_wanted(other), "a shader the profile does not name is never swapped");
     memset(&S, 0, sizeof S); S.tex[5][0] = 701; S.img[5][1] = 702;
     { const uint32_t rects[8] = {0, 0, 959, 539, 0, 0, 1919, 1079}; memcpy(S.push[1], rects, sizeof rects); }   // c[24]: input and output rectangles (origin, inclusive last texel)
