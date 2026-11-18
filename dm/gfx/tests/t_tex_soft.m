@@ -67,8 +67,21 @@ int main(void) { @autoreleasepool {
     lv = 2; CHECK("a host texture of every level (not made soft) keeps the game's level numbers", full && tex_soft_level_mt(&t, full, &lv) && lv == 2);
     CHECK("the storage of a soft texture is not written back from its host levels", !tex_storage_dst(&t));
 
+    // The logging that looks for the crosshatched ground (soft_event, soft_report): the soft texture was counted as made
+    CHECK("a soft texture made is counted", atomic_load(&g_se_n[SE_MADE]) >= 1);
+    // A second object over the same storage with another description (one level less): a package of its own, soft too
+    tex_t t2 = t; t2.serial = 99702; t2.d.levels = LEVELS - 1; nvn_tex_layout(&t2.d, &t2.L);
+    mtl_sub_begin(); id<MTLTexture> image2 = tex_mtl(&t2); finish();
+    CHECK("a second object over the storage, of another description, is soft too", image2 && image2 != image && image2.width == W / 2);
+    uint64_t hard0 = atomic_load(&g_se_n[SE_HARD_OTHER]), stale0 = atomic_load(&g_se_n[SE_STALE]);
+
     // The game copies from it: soft_harden makes it whole, from its storage, which still holds the finest level
     mtl_sub_begin(); soft_harden(&t); id<MTLTexture> whole = tex_mtl(&t); finish();
+    CHECK("making it whole is counted", atomic_load(&g_se_n[SE_HARD_OTHER]) == hard0 + 1);
+    // The other object keeps its soft host texture until its storage is written again, while its levels no longer move (the address is marked whole): the logging names it STALE
+    mtl_sub_begin(); id<MTLTexture> again2 = tex_mtl(&t2); finish();
+    CHECK("the other object over the storage still has its soft host texture, and the logging counts it STALE", again2 == image2 && again2.width == W / 2 && atomic_load(&g_se_n[SE_STALE]) == stale0 + 1);
+    CHECK("its levels no longer move although its host texture is soft (what STALE points at)", tex_soft_n(&t2) == 0);
     CHECK("after soft_harden the texture is not soft", !tex_soft(&t) && tex_soft_n(&t) == 0);
     CHECK("its host texture has every level at full size", whole && whole != image && whole.width == W && whole.height == H && whole.mipmapLevelCount == LEVELS);
     CHECK("its host levels hold the game's levels 0 to 3", whole && levels_match(whole, (const uint8_t *const *)expected, 0));
@@ -96,7 +109,7 @@ int main(void) { @autoreleasepool {
     CHECK("level 0 holds the copied bytes, the other levels the storage's", after && levels_match(after, exp2, 0));
     mtl_tex_release(&s); mtl_drain(); mtl_alias_drop_pool(&pool2); nvn_dirty_remove_range(mem2); mtl_pool_del(mem2); mtl_pool_del(src); mtl_drain(); free(mem2); free(src);
 
-    mtl_tex_release(&t); mtl_drain(); mtl_alias_drop_pool(&pool); nvn_dirty_remove_range(mem); mtl_pool_del(mem); mtl_drain(); free(mem);
+    mtl_tex_release(&t2); mtl_tex_release(&t); mtl_drain(); mtl_alias_drop_pool(&pool); nvn_dirty_remove_range(mem); mtl_pool_del(mem); mtl_drain(); free(mem);
     for (unsigned l = 0; l < LEVELS; l++) free(expected[l]);
     printf("t_tex_soft: %d checks, %d failed\n", checks, failed);
     return failed != 0;
