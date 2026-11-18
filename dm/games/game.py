@@ -106,8 +106,8 @@ def by_build(main_id):   # the profile whose build rows register this main build
 # running. A variant the host cannot draw (its colour, its rectangles) is refused there and runs as the game's (nvn_mtl.m up_mfx_wanted, up_mfx_encode)
 UPSCALER_SOURCE = re.compile(r'/agl_ndsr(?:_vr(?:_light)?)?\.pck#')
 # agl's chained upscaler (NDSR VR), from GreenKid-MV (adi0900): the compute shaders of agl_ndsr_vr.pck and agl_ndsr_vr_light.pck alone. Four dispatches a frame, not one: three that
-# square-root and pack the frame's colour into images only the chain reads, then the network, which writes the output picture. With DM_UPSCALER_CHAIN=1 MetalFX draws the network
-# from the colour the first stage reads and the three stages are left out (nvn_mtl.m up_chain_dispatch)
+# square-root and pack the frame's colour into images only the chain reads, then the network, which writes the output picture. With DM_UPSCALER=metalfx MetalFX draws the network
+# from the colour the first stage reads and the three stages are left out (nvn_mtl.m up_chain_dispatch; DM_UPSCALER_CHAIN=0 runs them)
 UPSCALER_CHAIN_SOURCE = re.compile(r'/agl_ndsr_vr(?:_light)?\.pck#')
 
 

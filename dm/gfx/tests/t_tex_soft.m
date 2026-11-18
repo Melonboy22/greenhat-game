@@ -1,6 +1,6 @@
 // tex_soft (nvn_mtl.m): a large block-compressed packaged texture is made without its finest level, its host level n holding the game's level n + 1; textures too small, of
 // another format or (with tex_soft_arrays off) 2D arrays stay whole; levels the game names move down one only on a texture made soft (tex_soft_level_mt); and soft_harden makes
-// the texture whole again with every level. Objects over one storage that share a package (pkg_shared) but are not all soft: the package goes whole (host_soft_k, SE_HARD_SHARED).
+// the texture whole again with every level. Objects over one storage that share a package (pkg_shared) but are not all soft: the package goes whole (host_soft_k), and soft_harden starts a new texture ID epoch so their IDs resolve again.
 // The switches are set here, whatever the profile says
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
@@ -74,21 +74,18 @@ int main(void) { @autoreleasepool {
     lv = 2; CHECK("a host texture of every level (not made soft) keeps the game's level numbers", full && tex_soft_level_mt(&t, full, &lv) && lv == 2);
     CHECK("the storage of a soft texture is not written back from its host levels", !tex_storage_dst(&t));
 
-    // The logging that looks for the crosshatched ground (soft_event, soft_report): the soft texture was counted as made
-    CHECK("a soft texture made is counted", atomic_load(&g_se_n[SE_MADE]) >= 1);
+    CHECK("its package records how many levels it left out", [tex_get(t.serial) isKindOfClass:[NvPkg class]] && ((NvPkg *)tex_get(t.serial))->soft_k == 1);
     // A second object over the same storage with another description (one level less): a package of its own, soft too
     tex_t t2 = t; t2.serial = 99702; t2.d.levels = LEVELS - 1; nvn_tex_layout(&t2.d, &t2.L);
     mtl_sub_begin(); id<MTLTexture> image2 = tex_mtl(&t2); finish();
     CHECK("a second object over the storage, of another description, is soft too", image2 && image2 != image && image2.width == W / 2);
-    uint64_t hard0 = atomic_load(&g_se_n[SE_HARD_OTHER]), stale0 = atomic_load(&g_se_n[SE_STALE]);
 
     // The game copies from it: soft_harden makes it whole, from its storage, which still holds the finest level
+    uint64_t gen0 = atomic_load(&g_ser_gen);
     mtl_sub_begin(); soft_harden(&t); id<MTLTexture> whole = tex_mtl(&t); finish();
-    CHECK("making it whole is counted", atomic_load(&g_se_n[SE_HARD_OTHER]) == hard0 + 1);
-    // The other object's package was still soft, while its levels no longer moved (the address is marked whole): the logging names it STALE, and its next lookup makes it whole too
-    uint64_t shared0 = atomic_load(&g_se_n[SE_HARD_SHARED]);
+    CHECK("making it whole moves the serial table's generation by more than its own note: a new texture ID epoch", atomic_load(&g_ser_gen) >= gen0 + 2);
+    // The other object's package was still soft, while its levels no longer moved (the address is marked whole): its next lookup makes it whole too
     mtl_sub_begin(); id<MTLTexture> again2 = tex_mtl(&t2); finish();
-    CHECK("the other object over the storage is counted STALE at its next lookup", atomic_load(&g_se_n[SE_STALE]) == stale0 + 1 && atomic_load(&g_se_n[SE_HARD_SHARED]) == shared0 + 1);
     CHECK("and is made whole then: every level at full size", again2 && again2 != image2 && again2.width == W && again2.mipmapLevelCount == LEVELS - 1 && tex_soft_n(&t2) == 0);
     CHECK("its levels hold the game's levels 0 to 2", again2 && levels_match(again2, (const uint8_t *const *)expected, 0));
     CHECK("after soft_harden the texture is not soft", !tex_soft(&t) && tex_soft_n(&t) == 0);
@@ -134,9 +131,8 @@ int main(void) { @autoreleasepool {
     CHECK("the first object's package is soft", fsoft && fsoft.width == W / 2);
     { unsigned l = 0; CHECK("before the image's lookup, its level 0 is one the shared soft texture left out (host_soft_k)", fsoft && !tex_soft_level_mt(&fb, fsoft, &l));
       l = 2; CHECK("and its level 2 is host level 1 there", fsoft && tex_soft_level_mt(&fb, fsoft, &l) && l == 1); }
-    shared0 = atomic_load(&g_se_n[SE_HARD_SHARED]);
     mtl_sub_begin(); id<MTLTexture> fimg = tex_mtl(&fb); finish();
-    CHECK("the image's first lookup makes the shared package whole, counted", fimg && fimg != fsoft && fimg.width == W && fimg.mipmapLevelCount == LEVELS && atomic_load(&g_se_n[SE_HARD_SHARED]) == shared0 + 1);
+    CHECK("the image's first lookup makes the shared package whole", fimg && fimg != fsoft && fimg.width == W && fimg.mipmapLevelCount == LEVELS && ((NvPkg *)tex_get(fb.serial))->soft_k == 0);
     CHECK("its levels hold the game's levels 0 to 3", fimg && levels_match(fimg, (const uint8_t *const *)expected, 0));
     mtl_sub_begin(); id<MTLTexture> fa2 = tex_mtl(&fa); finish();
     CHECK("the first object resolves to the same whole texture, its storage marked whole", fa2 == fimg && !tex_soft(&fa));
@@ -153,11 +149,10 @@ int main(void) { @autoreleasepool {
     for (unsigned l = 0; l < LEVELS; l++) { unsigned w = MAX((unsigned)W >> l, 1u); CHECK("reference swizzle succeeds (fourth texture)", !nvn_swizzle(&ga.d, l, 0, expected[l], bc1_pitch(w), ga.mem)); }
     mtl_sub_begin(); id<MTLTexture> gsoft = tex_mtl(&ga); finish();
     CHECK("the packaged object's texture is soft", gsoft && gsoft.width == W / 2 && !tex_soft(&gb));
-    uint64_t into0 = atomic_load(&g_se_n[SE_HARD_COPY_INTO]);
     p_copy_b2t c2 = {.src = (uint64_t)(uintptr_t)src2_for_test(n0), .tex = &gb, .r = {0, 0, 0, W, H, 1}};
     mtl_sub_begin(); copy_b2t(&c2, 0); finish();
     id<MTLTexture> gafter = tex_mtl(&gb);
-    CHECK("a copy through the object with no layout makes the shared package whole, counted", gafter && gafter.width == W && gafter.mipmapLevelCount == LEVELS && atomic_load(&g_se_n[SE_HARD_COPY_INTO]) == into0 + 1);
+    CHECK("a copy through the object with no layout makes the shared package whole, and its storage is marked whole", gafter && gafter.width == W && gafter.mipmapLevelCount == LEVELS && !tex_soft(&ga));
     const uint8_t *exp4[LEVELS] = {g_streamed2, expected[1], expected[2], expected[3]};
     CHECK("level 0 holds the copied bytes, the other levels the storage's", gafter && levels_match(gafter, exp4, 0));
     CHECK("the packaged object resolves to it too", tex_mtl(&ga) == gafter);

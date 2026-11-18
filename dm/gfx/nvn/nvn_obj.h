@@ -299,3 +299,4 @@ uint64_t nvn_new_serial(void);
 void nvn_serial_floor(uint64_t s);
 uint64_t mtl_pkg_copy_absorbs(void);
 int nvn_tex_level_range(const tex_t *t, unsigned level, unsigned layer, uint64_t *lo, uint64_t *hi);
+int nvn_stats_on(void);   // hle_nvn.c: DM_STATS=1, every status report; else only the lines front ends read

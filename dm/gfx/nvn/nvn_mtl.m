@@ -3337,61 +3337,9 @@ static int tex_atomic_alias(id<MTLTexture> base) {
 // coordinates). About three quarters of the texture's GPU bytes. Level numbers the game gives (views, copies) are one lower here: tex_soft_level. Reads of the size in a shader see the
 // smaller size. A texture the game copies from or reads back stays whole (soft_harden), as the copy needs what the game has at that level
 static nvn_hmap g_soft_hard = {.klen = 8};   // storage addresses of textures kept whole (soft_harden), under g_smu
-// What happens to soft textures, to find the one behind Ocarina of Time's crosshatched ("woven") ground: with tex_soft at 2 levels it appears now and then, goes with
-// DM_NVN_TEX_SOFT=0 and with reloading a save (oot-plus c07bc375, 2026-11-18), so something in play spoils a soft texture after it is made. Every event is counted
-// (soft_report, every 300 frames, with the clock time to match against when the ground went wrong); the first of each kind for each storage address is logged with the
-// texture, up to SE_CAP of that kind. SE_STALE: the storage was made whole (soft_harden marks the address) but another object over it still has its soft host texture,
-// whose levels no longer move (tex_soft_n is 0 there now); SE_VIEW_STALE: a texture ID's view of such a texture with a base level, which the view does not move either.
-// SE_HARD_SHARED: an object that is not soft resolved to a soft package (pkg_of), which is made whole then (tex_mtl_). The first play with the log (c81de65c, docked, the ground
-// crosshatched at 15:28) had no texture made whole by any path and no STALE, but one package re-uploaded whole by such an object at 15:28:04 (a 512x512 BC4 texture,
-// SE_STALE_REUP); it was the one object of that kind that wrote its storage, and the others were not counted. DM_NVN_SOFT_LOG=0 keeps the counts and drops the lines
-enum { SE_MADE, SE_REUP, SE_HARD_COPY_FROM, SE_HARD_READBACK, SE_HARD_COPY_INTO, SE_HARD_BC_ALIAS, SE_HARD_T2T_SRC, SE_HARD_T2T_DST, SE_HARD_OTHER, SE_HARD_SHARED,
-       SE_STALE, SE_STALE_REUP, SE_VIEW_REMAP, SE_VIEW_STALE, SE_SKIP, SE_N };
-static const char *const g_se_name[SE_N] = {
-    "made soft", "uploaded again soft (the game wrote its storage)", "made whole: the game copies from it", "made whole: the game reads it back",
-    "made whole: the game copies into it", "made whole: a block-compressed copy into an alias of it", "made whole: a texture copy's source",
-    "made whole: a texture copy's destination", "made whole",
-    "made whole: an object over its storage that is not soft (an image, one with no packaged layout, or its storage made whole by another) resolved to it",
-    "STALE: its storage was made whole but this object still has the soft host texture (its levels no longer move)",
-    "stale soft host texture replaced by a whole one at an upload", "view of a soft texture: its base level moved down",
-    "STALE VIEW: a view with a base level of a soft host texture whose storage was made whole (the level does not move)",
-    "copy skipped: it names a level the soft texture left out" };
-static const unsigned g_se_cap[SE_N] = {24, 160, 60, 60, 60, 60, 60, 60, 60, 60, 120, 60, 16, 60, 40};
-static _Atomic uint64_t g_se_n[SE_N]; static unsigned g_se_lines[SE_N];
-static os_unfair_lock g_se_lk = OS_UNFAIR_LOCK_INIT; static nvn_hmap g_se_seen = {.klen = 16};   // {storage address, event}: logged already
-static uint64_t g_se_t0;
-static void soft_clock(char *buf, size_t n, double *secs) {   // seconds since the first soft event, and the wall clock (HH:MM:SS) to match against what the player saw
-    uint64_t now = bp_now(); if (!g_se_t0) g_se_t0 = now; *secs = (double)(now - g_se_t0) / 1e9;
-    time_t w = time(NULL); struct tm tm; localtime_r(&w, &tm); strftime(buf, n, "%H:%M:%S", &tm);
-}
-static void soft_event(int ev, const tex_t *t) {
-    atomic_fetch_add(&g_se_n[ev], 1);
-    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_SOFT_LOG"); on = !e || atoi(e) != 0; }
-    if (!on || !t) return;
-    uint64_t key[2] = {(uint64_t)(uintptr_t)t->mem, (uint64_t)ev}; int print = 0;
-    os_unfair_lock_lock(&g_se_lk);
-    if (!nvn_hm_get(&g_se_seen, key) && g_se_lines[ev] < g_se_cap[ev]) { nvn_hm_put(&g_se_seen, key, (void *)1); g_se_lines[ev]++; print = 1; }
-    os_unfair_lock_unlock(&g_se_lk);
-    if (!print) return;
-    char clk[16]; double secs; soft_clock(clk, sizeof clk, &secs);
-    MLOG("soft texture %s, frame %llu (%.1f s, %s): ser=%llu %ux%ux%u, %u levels, format %#x, target %d, flags %#x, packaged layout %d, storage %p, pool %p",
-         g_se_name[ev], (unsigned long long)atomic_load(&g_cur_frame), secs, clk, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target,
-         t->d.flags, t->has_layout, t->mem, (void *)t->pool);
-}
 static int soft_addr_hard(const tex_t *t) {   // its storage was made whole (soft_harden). Caller does not hold g_smu
     if (!t || !t->mem || !g_soft_hard.n) return 0;
     uint64_t k = (uint64_t)(uintptr_t)t->mem; pthread_mutex_lock(&g_smu); int h = nvn_hm_get(&g_soft_hard, &k) != NULL; pthread_mutex_unlock(&g_smu); return h;
-}
-static void soft_report(unsigned long long frame) {
-    uint64_t n[SE_N]; for (int i = 0; i < SE_N; i++) n[i] = atomic_load(&g_se_n[i]);
-    if (!n[SE_MADE]) return;
-    char clk[16]; double secs; soft_clock(clk, sizeof clk, &secs);
-    MLOG("soft textures up to frame %llu (%.1f s, %s): made %llu, uploaded again %llu; made whole %llu (copied from %llu, read back %llu, copied into %llu, BC alias copies %llu, texture copies from %llu / into %llu, objects over it not soft %llu); STALE soft host textures seen %llu (replaced at an upload %llu); views moved down %llu, STALE views %llu; copies skipped %llu",
-         frame, secs, clk, (unsigned long long)n[SE_MADE], (unsigned long long)n[SE_REUP],
-         (unsigned long long)(n[SE_HARD_COPY_FROM] + n[SE_HARD_READBACK] + n[SE_HARD_COPY_INTO] + n[SE_HARD_BC_ALIAS] + n[SE_HARD_T2T_SRC] + n[SE_HARD_T2T_DST] + n[SE_HARD_OTHER] + n[SE_HARD_SHARED]),
-         (unsigned long long)n[SE_HARD_COPY_FROM], (unsigned long long)n[SE_HARD_READBACK], (unsigned long long)n[SE_HARD_COPY_INTO], (unsigned long long)n[SE_HARD_BC_ALIAS],
-         (unsigned long long)n[SE_HARD_T2T_SRC], (unsigned long long)n[SE_HARD_T2T_DST], (unsigned long long)n[SE_HARD_SHARED], (unsigned long long)n[SE_STALE], (unsigned long long)n[SE_STALE_REUP],
-         (unsigned long long)n[SE_VIEW_REMAP], (unsigned long long)n[SE_VIEW_STALE], (unsigned long long)n[SE_SKIP]);
 }
 // What tex_soft decides from the object alone (no lock): its kind, size and format, not whether its storage was made whole since
 static int tex_soft_kind(const tex_t *t) {
@@ -3735,6 +3683,7 @@ static void up_begin(void) {
 // If the old block is not retired on a switch it stays in the residency set and can never be freed, and "GPU allocated" climbs one block at a time with the switch count
 static uint64_t g_up_blocks_new, g_up_swaps, g_up_swap_bytes; static NSHashTable *g_up_old;   // g_up_old: old blocks switched out (weak references); the diagnostic line counts how many are still alive
 static void up_diag(void) { @autoreleasepool {
+    if (!nvn_stats_on()) return;   // (DM_STATS=1) the walk below copies the residency set's members under its lock
     // Weak-table enumeration autoreleases the buffers it finds. Do not keep
     // completed batches alive until the whole rendering submission ends.
     // Print a line when the block switch count changes; then one more line 5 seconds later (that batch's commit is long done and deferred retirement drained, so "GPU allocated" is the settled number)
@@ -5083,21 +5032,22 @@ static void rt_lossy(MTLTextureDescriptor *d) {
 // The soft texture becomes the spare (in-flight draws may still read it)
 // Also when this object would not be soft itself but the package it resolves to is (pkg_of: made by another object over the storage, host_soft_k): before, such an object was passed
 // over, and its copy or read back went into the soft texture at the game's level
-static void soft_harden_by(const tex_t *t, int why) {   // why: the SE_HARD_* event
+static void soft_harden(const tex_t *t) {
     if (!t || !t->mem || (t->pool && t->pool->magic != MAGIC('P', 'O', 'O', 'L'))) return;
     NvPkg *pk = pkg_of(t);
     if (!tex_soft(t) && !(pk && !pk->sparse && pk->soft_k)) return;
     uint64_t k = (uint64_t)(uintptr_t)t->mem; pthread_mutex_lock(&g_smu); nvn_hm_put(&g_soft_hard, &k, (void *)1); pthread_mutex_unlock(&g_smu);
-    soft_event(why, t);
     if (!pk || pk->sparse || !pk->soft_k) return;   // a package already whole (made by an object that is not soft) keeps its texture
     uint64_t st; id<MTLTexture> nt = pkg_upload(t, &st, nil, pk->tex.usage);
     if (!nt) return;
     if (pk->spare) defer_obj_release(pk->spare);
     pk->spare = pk->tex; pk->spare_fence = g_fence + 1; pk->tex = nt; pk->soft_k = 0; ser_note(t->serial); pk->stamp = st; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = st;
+    // Other objects over the storage share the package (pkg_shared) and their texture IDs still name the soft texture, now the spare, which the guard may let go (pkg_trim): no
+    // guest write tells their views to look again, so a change with no note starts a new epoch and every ID resolves again at the next walk (ser_sync). Rare: once per storage
+    atomic_fetch_add(&g_ser_gen, 1);
     if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
     pkg_edges_take(pk, t);
 }
-static void soft_harden(const tex_t *t) { soft_harden_by(t, SE_HARD_OTHER); }
 static _Atomic uint64_t g_stat_ghost_skip;
 static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
     tex_t *t = (tex_t *)ct;
@@ -5153,11 +5103,10 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
             if (g_nabs) pkg_absorb_take(pk, t);
             if (g_nabsp && pkg_absorb_waits(t->serial)) return pk->view ? pk->view : pk->tex;
             // A soft package and an object over it that would not be soft (an image or one with no packaged layout, which share it: tex_alias_key; or its storage made whole by another
-            // object since, SE_STALE): the storage goes whole, so every object over it has one shape and this one's copies, reads back and GPU writes land at the game's levels.
+            // object since): the storage goes whole, so every object over it has one shape and this one's copies, reads back and GPU writes land at the game's levels.
             // Ocarina of Time's crosshatched ground came with one (a 512x512 BC4 texture, oot-plus c81de65c, 2026-11-18). The lock-free kind check first: most lookups stop there
             if (!pk->sparse && pk->soft_k && (!tex_soft_kind(t) || (g_soft_hard.n && soft_addr_hard(t)))) {
-                if (tex_soft_kind(t)) soft_event(SE_STALE, t);
-                soft_harden_by(t, SE_HARD_SHARED);
+                soft_harden(t);
             }
             uint64_t now = nvn_dirty_now();
             int tracked = pk->span != NULL;   // kept from the upload: a texture's pool stays registered while the texture lives
@@ -5179,9 +5128,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
             id<MTLTexture> reuse = nil;
             if (pk->spare) { pthread_mutex_lock(&g_mu); uint64_t done = g_done; pthread_mutex_unlock(&g_mu); if (pk->spare_fence <= done && pk->spare.usage == pk->tex.usage) reuse = pk->spare; }
             if (reuse) { pthread_mutex_lock(&g_smu); if (entry_holds((__bridge void *)reuse)) reuse = nil; pthread_mutex_unlock(&g_smu); }   // serials that took it over (cpu_unc_drop) still draw it
-            uint64_t st, vg = nvn_sparse_gen(); unsigned was_k = pk->soft_k; id<MTLTexture> nt = pkg_upload(t, &st, reuse, pk->tex.usage);
+            uint64_t st, vg = nvn_sparse_gen(); id<MTLTexture> nt = pkg_upload(t, &st, reuse, pk->tex.usage);
             if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; pk->soft_k = tex_soft_n(t);
-                if (pk->soft_k) soft_event(SE_REUP, t); else if (was_k) soft_event(SE_STALE_REUP, t);
                 if (pk->spare && pk->spare != nt) defer_obj_release(pk->spare);   // still in use, or of another shape: retired
                 if (pk->sparse) sparse_view(pk, t);
                 zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "re-upload");
@@ -5192,7 +5140,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
         pk->sparse = t->pool && nvn_sparse_pool(t->pool); pk->vgen = pk->vseen = nvn_sparse_gen();
         pk->tex = pkg_upload(t, &pk->stamp, nil, 0);
         if (!pk->tex) return nil;
-        if ((pk->soft_k = tex_soft_n(t))) soft_event(SE_MADE, t);
+        pk->soft_k = tex_soft_n(t);
         pk->span = nvn_dirty_span(t->mem, t->L.size);
         pk->seen = pk->stamp; g_pkg_uploads++; if (dirtycheck() && !pk->sparse) pk->hash = full_hash(t->mem, t->L.size);   // "nothing written since" starts at the stamp: a write that faulted during the upload moved "now" past it
         pkg_edges_take(pk, t);
@@ -5340,8 +5288,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     pthread_mutex_lock(&g_res_mu); unsigned long nr = (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);
     int live = 0, peak = 0, cap = 0; nvn_dirty_stat(&live, &peak, &cap);
     pthread_mutex_lock(&g_smu); unsigned ns = g_by_serial.n, ashared = g_alias.n, nghost = g_ghost.n, nwait = g_retire_held.n; uint64_t ghost_puts = g_ghost_puts;
-    unsigned aorph = 0;   // shared textures no live texture object or finalized serial resolves to: kept only until their storage is taken over or their pool goes (alias_take_over)
-    { CFMutableSetRef held = CFSetCreateMutable(NULL, 0, NULL);
+    unsigned aorph = 0;   // shared textures no live texture object or finalized serial resolves to: kept only until their storage is taken over or their pool goes (alias_take_over); counted with DM_STATS=1 (0 otherwise)
+    if (nvn_stats_on()) { CFMutableSetRef held = CFSetCreateMutable(NULL, 0, NULL);
       for (uint32_t i = 0; i < g_by_serial.cap; i++) if (g_by_serial.vals[i]) CFSetAddValue(held, g_by_serial.vals[i]);
       for (uint32_t i = 0; i < g_ghost.cap; i++) if (g_ghost.vals[i]) CFSetAddValue(held, g_ghost.vals[i]);
       for (uint32_t i = 0; i < g_alias.cap; i++) if (g_alias.vals[i] && !CFSetContainsValue(held, g_alias.vals[i])) aorph++;
@@ -5360,6 +5308,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
          (unsigned long long)g_rh_made, (unsigned long long)g_rh_reused, (unsigned long long)g_rh_trimmed, rh_n, (unsigned long long)(rh_bytes >> 20), avail);
     // In a pool of their own: this runs on a guest thread whose outer pool never drains, and the objects these loops read (the set's members, a texture's heap or parent) come back
     // retained and autoreleased. Without it every object read stayed alive for good: 6.2 GB allocated outside the residency set after 9,000 frames, the game ended at 14.9 GB (427f7672)
+    if (!nvn_stats_on()) return;   // the lines below walk the residency set and the tables (DM_STATS=1): the memory line above is the one a front end reads
     @autoreleasepool {
     { uint64_t kind[4] = {0}, count[4] = {0};   // the memory budget, every 300 frames: what the footprint is made of, to see what an area change adds (the stop report had it only once)
       pthread_mutex_lock(&g_res_mu);
@@ -5380,7 +5329,6 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
           if (at >= sizeof fb) break;
       }
       if (fb[0]) MLOG("resolution families' heaps by memory pool up to frame %llu: %s", frame, fb); }
-    soft_report(frame);
     { uint64_t gb = 0, kb[3] = {0}; unsigned gn = 0, ge;   // what the ghost table of finalized serials alone keeps (textures of their own allocation, no live serial holding them), and of it
       // what is in use (used within GHOST_IDLE frames: kb[0]), what is idle and drains (kb[1]) and what is idle but kept for GHOST_IDLE_KEPT frames (a texture the GPU wrote: kb[2]).
       // A texture several serials name is counted once, by the first of them
@@ -7621,8 +7569,7 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
         }
         NSUInteger l0 = r.v.set_levels ? r.v.base_level : 0, nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : base.mipmapLevelCount - l0;
         unsigned vk = l0 ? host_soft_k(&rp->t, base) : 0;   // what the host texture leaves out, whichever object over its storage made it soft
-        if (vk) { l0 = l0 > vk ? l0 - vk : 0; if (!r.v.nlevels) nl = base.mipmapLevelCount - l0; soft_event(SE_VIEW_REMAP, &rp->t); }
-        else if (l0 && rp->t.has_layout && base.width < rp->t.d.width && soft_addr_hard(&rp->t)) soft_event(SE_VIEW_STALE, &rp->t);   // (logged only: soft_report)   // a soft texture has no level 0: a view of it starts at what is level 0 here, one level less
+        if (vk) { l0 = l0 > vk ? l0 - vk : 0; if (!r.v.nlevels) nl = base.mipmapLevelCount - l0; }   // a soft texture has no level 0: a view of it starts at what is level 0 here, one level less
         if (l0 >= base.mipmapLevelCount) { RED_ONCE(109, "texture view id %d starts at mip %lu beyond %lu levels", tid, (unsigned long)l0, (unsigned long)base.mipmapLevelCount); return nil; }
         // A level count past the texture's levels is cut to those it has, as deko3d's Tegra descriptor writer clips the maximum level (Echoes of Wisdom: levels 1 + 7 of a seven-level texture,
         // which Metal's validation refuses)
@@ -8617,7 +8564,7 @@ static int vc_draw_range(const p_draw *dw, const p_draw_idx *di, int64_t *lo, in
     *lo = (int64_t)mn + di->base_vertex; *hi = (int64_t)mx + di->base_vertex; return 1;
 }
 static void vc_stat(void) {   // every 3600 submissions
-    if (g_sub_serial - g_vc_stat < 3600) return;
+    if (g_sub_serial - g_vc_stat < 3600 || !nvn_stats_on()) return;   // (DM_STATS=1)
     if (g_vc_stat) MLOG("vertex conversion: %.0f vertices per submission (the bound ranges: %.0f), %u index ranges kept%s; shadow-input libraries loaded %llu (not usable %llu), pipelines built with them %llu", g_vc_conv / 3600.0, g_vc_whole / 3600.0, g_ir.n,
         vc_check() ? [NSString stringWithFormat:@"; checked %llu, %llu differed", (unsigned long long)g_vc_checks, (unsigned long long)g_vc_bad].UTF8String : "",
         (unsigned long long)g_vin_loaded, (unsigned long long)g_vin_failed, (unsigned long long)g_vin_psos);
@@ -11274,7 +11221,7 @@ static void pool_seen_scan(void) {
     uint64_t f = atomic_load(&g_cur_frame); if (f != g_walk_frame) { g_walk_frame = f; g_walk_spent = 0; g_walk_req = 0; }
     if (g_stand_todo_n) pool_stand_scan();
     { static uint64_t at, was; uint64_t now = g_stand_made + g_first_stand + g_first_dummy;   // the totals, every 300 frames in which they changed
-      if (f >= at + 300 && now != was) { at = f; was = now;
+      if (f >= at + 300 && now != was && nvn_stats_on()) { at = f; was = now;   // (DM_STATS=1)
           MLOG("pool stand-ins up to frame %llu: %llu made in %.1f ms (%llu of them a level cut down), %llu gave way to their texture, %llu held now in %d heaps of %u MB (%llu not made: the heaps were full), %u waiting; first reads of a texture not made found a stand-in %llu times%s and the dummy %llu times (%llu of them textures of 256 KB or more)",
                (unsigned long long)f, (unsigned long long)g_stand_made, g_stand_ns / 1e6, (unsigned long long)g_stand_picked, (unsigned long long)g_stand_done, (unsigned long long)g_stand_live, g_nstand_heap, (unsigned)(STAND_HEAP >> 20), (unsigned long long)g_stand_full, g_stand_todo_n, (unsigned long long)g_first_stand,
                g_first_stale ? [NSString stringWithFormat:@" (%llu written since the stand-in was made)", (unsigned long long)g_first_stale].UTF8String : "", (unsigned long long)g_first_dummy, (unsigned long long)g_first_dummy_big); } }
@@ -15523,7 +15470,7 @@ static void dispatch(const p_dispatch *dp) {
     rp_flush();   // A full clear with no draw after it waits for the next pass on its targets, but it comes before this dispatch, which may read or write them as images: land it first, as copy_t2t does
     image_prepare(prog_get(S.cprog), 0x20);
     if (ndve_engine_dispatch(cs, dp)) return;   // nn::ndve's movie network as the host's kernels (DM_NDVE_ENGINE=1)
-    if (DM_GAME_UPSCALER_CHAIN_N && !dp->ind && up_chain_dispatch(cs)) return;   // a dispatch of the game's chained upscaler that MetalFX drew from the frame's colour or made unneeded (DM_UPSCALER_CHAIN=1)
+    if (DM_GAME_UPSCALER_CHAIN_N && !dp->ind && up_chain_dispatch(cs)) return;   // a dispatch of the game's chained upscaler that MetalFX drew from the frame's colour or made unneeded (DM_UPSCALER_CHAIN)
     if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx)
     // Threadgroup memory past Metal's 32 KB, in a device buffer (dmsh_build.py tg_spill): a slice for every workgroup of the grid. An indirect dispatch's grid is in GPU memory, written earlier
     // in the frame: the replay waits for the GPU (as an indirect-count multi-draw does, mdi_wait) and reads it. Mario Kart World's spilled dispatches are all direct, of 1 to 3 workgroups
@@ -15605,12 +15552,12 @@ static void copy_t2b(const p_copy_b2t *c, uint32_t size) {
     rp_flush();   // Materialize pending clears before reading, matching copy_t2t.
     g_wr_epoch++; g_mdx_epoch++;
     if (c->tex) xv_check(c->tex->serial, c->has_view && c->view.set_levels ? c->view.base_level : 0, c->has_view && c->view.set_layers ? c->view.min_layer : 0, "texture-to-buffer copy");
-    soft_harden_by(c->tex, SE_HARD_COPY_FROM);   // the game copies from it: whole from here on (tex_soft)
+    soft_harden(c->tex);   // the game copies from it: whole from here on (tex_soft)
     id<MTLTexture> t = tex_mtl(c->tex);
     if (!t) return;
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
-    if (!tex_soft_level_mt(c->tex, t, &level)) { soft_event(SE_SKIP, c->tex); RED_ONCE(164, "copy out of a left-out level of a soft texture: skipped (first case ser=%llu)", (unsigned long long)c->tex->serial); return; }
+    if (!tex_soft_level_mt(c->tex, t, &level)) { RED_ONCE(164, "copy out of a left-out level of a soft texture: skipped (first case ser=%llu)", (unsigned long long)c->tex->serial); return; }
     if (!tex_level_ok(t, level, "texture-to-buffer copy")) return;
     const p_copy_strides *cs = copy_strides(c, size); int64_t rs = cs ? cs->row : S.copy_stride, is = cs ? cs->image : S.copy_img_stride;   // S: OP_COPY_STRIDE of an older capture
     size_t row = rs ? (size_t)rs : (size_t)((c->r.width + bw - 1) / bw) * bpb;
@@ -15683,7 +15630,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     // A guest thread can live indefinitely without draining its outer pool: release readback temporaries here, after the GPU and CPU copies finish.
     // Finding: docs/reference/memory.md, GPU readback without an autorelease pool.
     @autoreleasepool {
-    soft_harden_by(t, SE_HARD_READBACK);   // the game reads it back: whole from here on (tex_soft)
+    soft_harden(t);   // the game reads it back: whole from here on (tex_soft)
     id<MTLTexture> mt = tex_mtl(t);
     { unsigned lv = (unsigned)level; if (mt && !tex_soft_level_mt(t, mt, &lv)) { memset(dst, 0, img * nz); return; } level = lv; }
     if (!mt || !tex_level_ok(mt, level, "CPU readback")) { memset(dst, 0, img * nz); return; }
@@ -15805,12 +15752,12 @@ static void mirror_rb_land(void *p) {   // the submission's completion handler
 }
 static void copy_b2t(const p_copy_b2t *c, uint32_t size) {
     if (c->tex) zskip_del(c->tex->serial);
-    soft_harden_by(c->tex, SE_HARD_COPY_INTO);   // the game copies into it: whole from here on, so the copy lands at the game's own level (tex_soft)
+    soft_harden(c->tex);   // the game copies into it: whole from here on, so the copy lands at the game's own level (tex_soft)
     id<MTLTexture> t = tex_mtl(c->tex); sparse_gpu_wrote(c->tex);
     if (!t) { PD("C ser=%llu (no host texture)", c->tex->serial); return; }
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
-    if (!tex_soft_level_mt(c->tex, t, &level)) { soft_event(SE_SKIP, c->tex); return; }   // into a left-out level of a soft texture, which is not kept
+    if (!tex_soft_level_mt(c->tex, t, &level)) { return; }   // into a left-out level of a soft texture, which is not kept
     if (!tex_level_ok(t, level, "buffer-to-texture copy")) return;
     const p_copy_strides *cs = copy_strides(c, size); int64_t rs = cs ? cs->row : S.copy_stride, is = cs ? cs->image : S.copy_img_stride;   // S: OP_COPY_STRIDE of an older capture
     size_t row = rs ? (size_t)rs : (size_t)((c->r.width + bw - 1) / bw) * bpb;
@@ -16023,7 +15970,7 @@ static int bc_alias_copy(const p_copy_t2t *c, id<MTLTexture> s, unsigned sl, uns
         if (!g_treg[i].ok || g_treg[i].gone || t->mem != dt->mem || t->serial == dt->serial || t->d.target != NVN_TEXTURE_TARGET_2D) continue;
         if ((t->d.width + 3) / 4 != dt->d.width || (t->d.height + 3) / 4 != dt->d.height) continue;
         uint32_t mf = 0; if (!nvn_fmt_to_mtl(t->d.format, &mf, NULL) || bc_block_bytes((MTLPixelFormat)mf) != (int)tb) continue;
-        soft_harden_by(t, SE_HARD_BC_ALIAS);   // the copy writes it at the game's level and block position: whole first (tex_soft; a soft one took the bytes at the wrong place: woven ground in Hyrule Field)
+        soft_harden(t);   // the copy writes it at the game's level and block position: whole first (tex_soft; a soft one took the bytes at the wrong place: woven ground in Hyrule Field)
         id<MTLTexture> m = tex_mtl(t); while (m.parentTexture) m = m.parentTexture;
         if (m && bc_block_bytes(m.pixelFormat) == (int)tb) { bc = m; bser = t->serial; }
     }
@@ -16062,18 +16009,18 @@ static id<MTLTexture> copy_t2t_enc(const p_copy_t2t *c, unsigned *dlevel) {
         int ss = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, ds = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
         if (zskip_has(c->src->serial, sl, ss)) zskip_add(c->dst->serial, dl, ds);
     }
-    soft_harden_by(c->src, SE_HARD_T2T_SRC);   // the game copies from it: whole from here on (tex_soft)
+    soft_harden(c->src);   // the game copies from it: whole from here on (tex_soft)
     id<MTLTexture> s = tex_mtl(c->src);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
     if (!s || !c->dst) return nil;
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
-    if (!tex_soft_level_mt(c->src, s, &sl)) { soft_event(SE_SKIP, c->src); RED_ONCE(165, "texture copy with a left-out level of a soft texture: skipped (first case src ser=%llu dst ser=%llu)", (unsigned long long)c->src->serial, (unsigned long long)c->dst->serial); return nil; }
+    if (!tex_soft_level_mt(c->src, s, &sl)) { RED_ONCE(165, "texture copy with a left-out level of a soft texture: skipped (first case src ser=%llu dst ser=%llu)", (unsigned long long)c->src->serial, (unsigned long long)c->dst->serial); return nil; }
     if (!tex_level_ok(s, sl, "texture copy source")) return nil;
     if (bc_alias_copy(c, s, sl, sz0, dl, dz0)) return nil;   // the destination aliases a compressed texture: the bytes go there, and the alias's own texture is not made (see bc_alias_copy)
-    soft_harden_by(c->dst, SE_HARD_T2T_DST);   // the game copies into it: whole from here on (tex_soft)
+    soft_harden(c->dst);   // the game copies into it: whole from here on (tex_soft)
     id<MTLTexture> d = tex_mtl(c->dst); sparse_gpu_wrote(c->dst);
-    if (d && !tex_soft_level_mt(c->dst, d, &dl)) { soft_event(SE_SKIP, c->dst); RED_ONCE(165, "texture copy with a left-out level of a soft texture: skipped (first case src ser=%llu dst ser=%llu)", (unsigned long long)c->src->serial, (unsigned long long)c->dst->serial); return nil; }
+    if (d && !tex_soft_level_mt(c->dst, d, &dl)) { RED_ONCE(165, "texture copy with a left-out level of a soft texture: skipped (first case src ser=%llu dst ser=%llu)", (unsigned long long)c->src->serial, (unsigned long long)c->dst->serial); return nil; }
     if (!d || !tex_level_ok(d, dl, "texture copy destination")) return nil;
     *dlevel = dl;
     if (c->flags & DM_COPY_RESOLVE) {   // Downsample: multisample resolve into the single-sample destination (depth takes sample 0); with equal sample counts it is a plain whole copy
@@ -17518,12 +17465,13 @@ static int up_mfx_encode(NvShader *cs) { return up_mfx_encode_from(cs, 0); }
 // nothing outside the chain reads them. With DM_UPSCALER=metalfx this host already draws the network by MetalFX from its square-rooted input (UP_COLOR_ROOT: squared into linear), but
 // the three stages before it still run. With DM_UPSCALER_CHAIN=1 the network is drawn from the colour the first stage read (up_mfx_encode_from, the network's rectangles: that colour
 // is its input's size), in HDR mode, and the three stages are left out while the previous network was drawn that way and this frame's colour is known, so a refusal costs no
-// frame: the chain then runs whole from the next frame on (the network by up_mfx_encode as before), and the stages left out of this one are logged in red. Off by default until an A/B
-// in play shows the same picture with less GPU time (oot-plus, 2026-11-18)
+// frame: the chain then runs whole from the next frame on (the network by up_mfx_encode as before), and the stages left out of this one are logged in red. On by default
+// (oot-plus, 2026-11-18): the stages only square-root and pack the colour the network takes (this host's square-rooted path squares it back and the picture is right), so drawing
+// from the colour itself is the same picture without three dispatches a frame. DM_UPSCALER_CHAIN=0 runs them
 enum { UPC_STAGE = 1, UPC_NETWORK, UPC_KEEP, UPC_NONE };   // NvShader up_chain: a dispatch before the network, a network drawn from the colour, a network that keeps the chain, not in the chain
 static int g_upc_color, g_upc_ok, g_upc_skipped;   // the colour of this frame's chain (texture ID, 0 none), the previous network drawn from it, stages left out since the colour was taken
 static uint64_t g_upc_drawn, g_upc_left;   // networks drawn from the colour, stage dispatches left out
-static int upc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_UPSCALER_CHAIN"); v = e && atoi(e) > 0; if (v) MLOG("upscaler chain (DM_UPSCALER_CHAIN=1): with DM_UPSCALER=metalfx the chained network is drawn from the frame's colour and the stages before it are left out"); } return v; }
+static int upc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_UPSCALER_CHAIN"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_UPSCALER_CHAIN=0: the chained upscaler's stages run, and MetalFX draws its network from their square-rooted output"); } return v; }
 static int up_chain_named(NvShader *cs) {
     for (const char *k = DM_GAME_UPSCALER_CHAIN_KEYS; *k; k += k[16] == ',' ? 17 : 16) if (!strncmp(k, cs->key, 16)) return 1;
     return 0;
@@ -17636,6 +17584,7 @@ static void present_gpu_note(double s, int fx) {
     if (!(s > 0 && s < 1)) return;
     v[fx][n[fx]++] = s * 1e3;
     if (n[fx] < 600) return;
+    if (!nvn_stats_on()) { n[fx] = 0; return; }   // the line below with DM_STATS=1
     double *a = v[fx]; for (int i = 1; i < 600; i++) { double x = a[i]; int j = i - 1; while (j >= 0 && a[j] > x) { a[j + 1] = a[j]; j--; } a[j + 1] = x; }
     MLOG("present command buffer GPU time over 600 presents %s: p50 %.3f ms, p95 %.3f ms, max %.3f ms", fx ? "through MetalFX" : "through the bilinear pass", a[299], a[569], a[599]);
     n[fx] = 0;
@@ -17754,7 +17703,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         static uint64_t lead_n;
         leads[lead_n % 300] = (target_ts - CACurrentMediaTime()) * 1000.0; e2e[lead_n % 300] = g_link_it_tin > 0 ? (target_ts - g_link_it_tin) * 1000.0 : 0;
         lead_n++;
-        if (lead_n % 300 == 0) {
+        if (lead_n % 300 == 0 && nvn_stats_on()) {   // (DM_STATS=1)
             double a[300]; memcpy(a, leads, sizeof a);
             for (int i = 1; i < 300; i++) { double v = a[i]; int j = i - 1; while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; } a[j + 1] = v; }
             double b[300]; memcpy(b, e2e, sizeof b);
