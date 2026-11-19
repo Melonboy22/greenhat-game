@@ -4457,6 +4457,16 @@ static void tex_zero_fill(id<MTLTexture> mt) {
 int nvn_flushed(const void *p, uint64_t n);   // hle_nvn.c
 static int tex_storage_gpu(const tex_t *t, id<MTLTexture> mt); static int gws_owned(uintptr_t lo, uintptr_t hi);
 static uint64_t g_stored_fills;   // new GPU textures filled from storage their GPU writes were stored into (t_cpu_storage)
+// Diagnostic DM_NVN_TRACE_TEX=<W>x<H>:<NVN format> (e.g. 260x260:0xd, Ocarina of Time's terrain normal tiles): how each texture of that shape gets its host texture (shared,
+// made and filled or zeroed, taken from its storage), every GPU store into it, CPU rewrites after its first use and its release, with the host texture's address so the
+// writer and the reader of one storage can be matched. Capped at 20,000 lines
+static int g_in_rt_attach;
+static int trace_tex(const tex_t *t) {
+    static int on = -1; static uint32_t w, h, f;
+    if (on < 0) { const char *e = getenv("DM_NVN_TRACE_TEX"); on = e && sscanf(e, "%ux%u:%i", &w, &h, (int *)&f) == 3; if (on) MLOG("DM_NVN_TRACE_TEX: tracing textures %ux%u format %#x", w, h, f); }
+    static uint64_t lines; if (!on || !t || t->d.width != w || t->d.height != h || t->d.format != f) return 0;
+    return lines++ < 20000;
+}
 static int mem_any(const uint8_t *p, uint64_t n) {   // whether any byte is non-zero (stops at the first)
     uint64_t i = 0, v;
     for (; i + 8 <= n; i += 8) { memcpy(&v, p + i, 8); if (v) return 1; }
@@ -4475,6 +4485,9 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     static int stored_fill = -1; if (stored_fill < 0) { const char *e = getenv("DM_NVN_GPU_STORAGE_FILL"); stored_fill = !e || atoi(e) != 0; }
     int flushed = !no_cpu && !uncached && flush_fill && nvn_flushed(t->mem, t->L.size);
     int stored = !no_cpu && !uncached && !flushed && stored_fill && tex_storage_gpu(t, mt) && gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size);
+    if (trace_tex(t)) MLOG("[trace] ser=%llu fill check: pool %#x, flushed %d, store on %d, storage_gpu %d, GPU-owned %d, in rt attach %d, submit thread %d, storage non-zero %d → %s",
+        (unsigned long long)t->serial, t->pool->flags, flushed, stored_fill, tex_storage_gpu(t, mt), gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size), g_in_rt_attach, on_sub_thread(),
+        mem_any(t->mem, t->L.size), (no_cpu || uncached || flushed || stored) ? "fill" : "zeros");
     if (!no_cpu && !uncached && !flushed && !stored) return 0;
     if (!atomic_load(&g_sub_thread_set) || !on_sub_thread() || !mem_any(t->mem, t->L.size)) return 0;   // the upload batch belongs to the submit thread
     if (pkg_upload(t, NULL, mt, 0) != mt) return 0;
@@ -4845,6 +4858,8 @@ static int tex_cpu_content(const tex_t *t) {
 // make its storage stale (Tears of the Kingdom's BC4 atlas and ASTC arrays). Any other texture keeps the usage test (MTL_REWRITE_GPU: left to the GPU for good), as before
 int mtl_tex_cpu_rewritten(const tex_t *t) {
     int unc = tex_unc(t);
+    if (trace_tex(t)) MLOG("[trace] ser=%llu CPU wrote it after its first use: storage ok %d, GPU-owned %d (GPU-owned: left to the GPU)", (unsigned long long)t->serial, tex_storage_ok(t, unc),
+                           unc && gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size));
     if (tex_storage_ok(t, unc)) {
         if (unc && gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size)) return MTL_REWRITE_GPU_NOW;
         mtl_tex_cpu_written(t);
@@ -5140,6 +5155,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
             mtl_tex_cpu_written(t); packaged = 1;
         }
     }
+    if (!have && trace_tex(t)) MLOG("[trace] ser=%llu first resolve: mem %p, %s, GPU-owned %d, storage non-zero %d, in rt attach %d", (unsigned long long)t->serial, t->mem,
+        packaged ? "taken from its storage (packaged)" : "a GPU texture", gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size), mem_any(t->mem, t->L.size), g_in_rt_attach);
     if (packaged) {
         NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;   // resolved as GPU-only before the CPU wrote it: dropped and rebuilt as packaged
         if (!pk && !have && !(t->pool && nvn_sparse_pool(t->pool)) && (pk = pkg_shared(t))) tex_put(t->serial, pk);   // another object over the same bytes (NvPkgRef)
@@ -5251,7 +5268,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
     __unsafe_unretained id shared = hm_get_id(&g_alias, &ak); if (shared) nvn_hm_put(&g_alias_seen, &ak, (void *)(uintptr_t)(g_fence + 1));
     int taken = !live && !shared && treg_retired && alias_overlaps(&ak);
     pthread_mutex_unlock(&g_smu);
-    if (shared) { tex_put(t->serial, shared); return shared; }
+    if (shared) { if (trace_tex(t)) MLOG("[trace] ser=%llu shares host texture %p (sharing entry)", (unsigned long long)t->serial, (__bridge void *)shared); tex_put(t->serial, shared); return shared; }
     {   // NVN textures over the same storage share its bytes. One that differs from a shared texture only by the other format of an sRGB / linear pair is a view of it: as its own Metal
         // texture, Mario Kart World's Grand Prix movie (an RGBA8 render target the YUV pass writes, sampled by the composite through an RGBA8_SRGB texture) showed a frozen frame
         // The other formats of the pair are looked up directly (srgb_twins), with the rest of the key unchanged; the descriptor is built only when one is shared
@@ -5323,6 +5340,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
     alias_take_over(&ak);
     hm_put_id(&g_alias, &ak, mt); CFSetAddValue(g_alias_set, (__bridge const void *)mt); nvn_hm_put(&g_alias_seen, &ak, (void *)(uintptr_t)(g_fence + 1));
     pthread_mutex_unlock(&g_smu);
+    if (trace_tex(t)) MLOG("[trace] ser=%llu made host texture %p (%s)", (unsigned long long)t->serial, (__bridge void *)mt, mt.parentTexture ? "a view" : "new");
     tex_put(t->serial, mt);
     return mt;
 }
@@ -5429,6 +5447,7 @@ void mtl_vc_drop(uint64_t ser);
 static void treg_retire_serial(uint64_t ser);
 void mtl_tex_release(tex_t *t) {
     if (!t->serial) return;
+    if (trace_tex(t)) MLOG("[trace] ser=%llu released (mem %p)", (unsigned long long)t->serial, t->mem);
     pthread_mutex_lock(&g_smu);
     // NVNtexture is plain data, and engines finalize copies of it (Breath of the Wild about 100 a frame, Ocarina of Time every few frames, for textures whose own object lives on). A copy's Finalize ends
     // only the copy. Taken for the texture's end, it deleted the host texture, which the next read made and uploaded again: with a pool walk touching every ID (pool_gpu), 5,500 uploads and 500 MB to 1 GB
@@ -5932,6 +5951,7 @@ static int tex_storage_gpu(const tex_t *t, id<MTLTexture> mt) {
 // After a GPU write into level `level`, layers [slice, slice + n), of the texture: its region r (texels; NULL for the whole level) into the texture's storage
 static void gsb_store(const tex_t *t, id<MTLTexture> mt, unsigned level, unsigned slice, unsigned n, const NVNcopyRegion *r) {
     static id<MTLComputePipelineState> ps; static int failed;
+    if (trace_tex(t)) MLOG("[trace] ser=%llu GPU wrote level %u into host texture %p: %s", (unsigned long long)t->serial, level, (__bridge void *)mt, tex_storage_gpu(t, mt) ? "stored into its storage" : "not stored");
     if (!n || failed || !tex_storage_gpu(t, mt) || level >= mt.mipmapLevelCount) return;
     if (slice + n > mt.arrayLength * (mt.textureType == MTLTextureTypeCube || mt.textureType == MTLTextureTypeCubeArray ? 6 : 1)) return;
     uint32_t row, rows, slices, bpb; uint64_t base; unsigned th, td;
@@ -5970,6 +5990,8 @@ static void gsb_store(const tex_t *t, id<MTLTexture> mt, unsigned level, unsigne
 static void rt_mirror_add(const tex_t *t, id<MTLTexture> mt, NSUInteger level, NSUInteger slice, int att) {
     if (!mt) return;
     int own = !tex_storage_dst(t);
+    if (trace_tex(t)) MLOG("[trace] ser=%llu render pass into level %lu of host texture %p: %s", (unsigned long long)t->serial, (unsigned long)level, (__bridge void *)mt,
+                           !own ? "uploaded from its storage (read back)" : tex_storage_gpu(t, mt) ? "stored after the pass" : "not stored");
     if (own && !tex_storage_gpu(t, mt)) return;
     for (int i = 0; i < g_nrtm; i++) if (g_rtm[i].t.serial == t->serial && g_rtm[i].level == level && g_rtm[i].slice == slice) return;
     if (g_nrtm == (int)(sizeof g_rtm / sizeof g_rtm[0])) { RED_ONCE(131, "more than %d storage-backed render targets in one pass: the rest are not read back into their storage", g_nrtm); return; }

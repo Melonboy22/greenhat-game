@@ -254,6 +254,7 @@ DM_NVN_TEXSNAP	diagnostic	`=<in-frame pass index>,…`: with `DM_NVN_TEXDUMP`, c
 DM_NVN_TEX_SOFT	switch	`1` / `0` overrides the profile's `tex_soft`: large block-compressed textures from the game files are kept without their finest level on the GPU (about three quarters of their bytes)
 DM_NVN_TEX_SOFT_ARRAYS	switch	`1` / `0` overrides the profile's `tex_soft_arrays`: whether 2D array textures are made soft too (with `tex_soft`)
 DM_NVN_TEX_SOFT_LEVELS	switch	`1` to `3` overrides the profile's `tex_soft_levels`: how many finest levels a soft texture leaves out (fewer where it would drop under 128 texels on its short side)
+DM_NVN_TRACE_TEX	diagnostic	`=<W>x<H>:<NVN format>` (e.g. `260x260:0xd`): logs `[trace]` lines for every texture of that shape: how it gets its host texture (shared, made and filled or zeroed, taken from its storage), each render pass and GPU store into it, CPU rewrites after its first use and its release, with host texture addresses; at most 20,000 lines
 DM_NVN_TREG_ID	diagnostic	`=<n>` logs every registration of texture ID n: what it holds from then on, and the frame being recorded
 DM_NVN_TSV	diagnostic	`=<path>` writes the per-frame NVN call table and timing rows (frame, metric, value) to a TSV, read by `scripts/bench.py`
 DM_NVN_TSV_CALLS	diagnostic	`0` makes `DM_NVN_TSV` write only the timing rows, without the call counts (about two thirds of the file)
