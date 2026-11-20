@@ -4455,7 +4455,7 @@ static void tex_zero_fill(id<MTLTexture> mt) {
 // object then came up as a GPU texture of zeros, not drawn again: a zero normal, woven / crosshatched ground across the tile (oot-plus 2026-11-18: 3 of 27 registered normal tiles
 // zero on the host, 2 of them in the frame's terrain draws, with a drawn normal map in their storage). DM_NVN_GPU_STORAGE_FILL=0 leaves those out
 int nvn_flushed(const void *p, uint64_t n);   // hle_nvn.c
-static int tex_storage_gpu(const tex_t *t, id<MTLTexture> mt); static int gws_owned(uintptr_t lo, uintptr_t hi);
+static int tex_storage_gpu(const tex_t *t, id<MTLTexture> mt); static int tex_storage_gpu_kind(const tex_t *t, id<MTLTexture> mt); static int gws_owned(uintptr_t lo, uintptr_t hi);
 static uint64_t g_stored_fills;   // new GPU textures filled from storage their GPU writes were stored into (t_cpu_storage)
 // Diagnostic DM_NVN_TRACE_TEX=<W>x<H>:<NVN format> (e.g. 260x260:0xd, Ocarina of Time's terrain normal tiles): how each texture of that shape gets its host texture (shared,
 // made and filled or zeroed, taken from its storage), every GPU store into it, CPU rewrites after its first use and its release, with the host texture's address so the
@@ -4484,9 +4484,9 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     static int flush_fill = -1; if (flush_fill < 0) { const char *e = getenv("DM_NVN_FLUSH_FILL"); flush_fill = !e || atoi(e) != 0; }
     static int stored_fill = -1; if (stored_fill < 0) { const char *e = getenv("DM_NVN_GPU_STORAGE_FILL"); stored_fill = !e || atoi(e) != 0; }
     int flushed = !no_cpu && !uncached && flush_fill && nvn_flushed(t->mem, t->L.size);
-    int stored = !no_cpu && !uncached && !flushed && stored_fill && tex_storage_gpu(t, mt) && gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size);
-    if (trace_tex(t)) MLOG("[trace] ser=%llu fill check: pool %#x, flushed %d, store on %d, storage_gpu %d, GPU-owned %d, in rt attach %d, submit thread %d, storage non-zero %d → %s",
-        (unsigned long long)t->serial, t->pool->flags, flushed, stored_fill, tex_storage_gpu(t, mt), gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size), g_in_rt_attach, on_sub_thread(),
+    int stored = !no_cpu && !uncached && !flushed && stored_fill && tex_storage_gpu_kind(t, mt) && gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size);
+    if (trace_tex(t)) MLOG("[trace] ser=%llu fill check: pool %#x, flushed %d, store on %d, storage_gpu kind %d, GPU-owned %d, in rt attach %d, submit thread %d, storage non-zero %d → %s",
+        (unsigned long long)t->serial, t->pool->flags, flushed, stored_fill, tex_storage_gpu_kind(t, mt), gws_owned((uintptr_t)t->mem, (uintptr_t)t->mem + t->L.size), g_in_rt_attach, on_sub_thread(),
         mem_any(t->mem, t->L.size), (no_cpu || uncached || flushed || stored) ? "fill" : "zeros");
     if (!no_cpu && !uncached && !flushed && !stored) return 0;
     if (!atomic_load(&g_sub_thread_set) || !on_sub_thread() || !mem_any(t->mem, t->L.size)) return 0;   // the upload batch belongs to the submit thread
@@ -5942,11 +5942,17 @@ static id<MTL4ComputeCommandEncoder> dispatch_enc(int game); static int rb_copy_
 static int rb_swap_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_t drow, size_t dimg, size_t wb, size_t rows, size_t nz, int shift);
 static uint64_t g_gsb_stores, g_gsb_bytes;
 void mtl_gsb_stats(uint64_t *n, uint64_t *bytes) { *n = g_gsb_stores; *bytes = g_gsb_bytes; }   // hle_nvn.c's power line
-static int tex_storage_gpu(const tex_t *t, id<MTLTexture> mt) {
+// The kind of texture whose GPU writes are stored (tex_storage_gpu without its texture's state): a new GPU texture over storage the GPU drew into through one of its kind is filled from it
+// (tex_init_fill). That fill cannot ask tex_storage_gpu: a texture registered through NVN is on the first-use list (nvn_ft_tracked) until its first resolution, and not the GPU's yet, so
+// tex_storage_dst holds it for one the host uploads from its storage and tex_storage_gpu says no; Ocarina of Time's normal tiles were all left as zeros so (DM_NVN_TRACE_TEX, 47 of 47)
+static int tex_storage_gpu_kind(const tex_t *t, id<MTLTexture> mt) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_GPU_STORAGE"); on = !e || atoi(e) != 0; if (!on) MLOG("DM_NVN_GPU_STORAGE=0: what the GPU writes into a GPU texture is not written into its storage"); }
-    if (!on || !mt || !tex_unc(t) || !tex_storage_ok(t, 1) || tex_cpu_written(t->serial) || tex_storage_dst(t)) return 0;
+    if (!on || !mt || !tex_unc(t) || !tex_storage_ok(t, 1)) return 0;
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);   // a format the host widens (RGB8) or a depth view does not hold the storage's bytes
     return bpb && !(16 % bpb) && mt.sampleCount == 1 && !mtl_fmt_depth(mt.pixelFormat) && mt.pixelFormat != MTLPixelFormatStencil8 && mtl_pf_block_bytes(mt.pixelFormat) == (size_t)bpb;
+}
+static int tex_storage_gpu(const tex_t *t, id<MTLTexture> mt) {
+    return tex_storage_gpu_kind(t, mt) && !tex_cpu_written(t->serial) && !tex_storage_dst(t);
 }
 // After a GPU write into level `level`, layers [slice, slice + n), of the texture: its region r (texels; NULL for the whole level) into the texture's storage
 static void gsb_store(const tex_t *t, id<MTLTexture> mt, unsigned level, unsigned slice, unsigned n, const NVNcopyRegion *r) {

@@ -265,6 +265,49 @@ static void handover_holders(void) {
     CHECK(!resident(tc), "hand-over: the pool's own texture goes with the pool");
     munmap(mem, len);
 }
+// A normal tile made again over a drawn tile's storage, set up through NVN as the game does: the new tile is on the first-use list when it is resolved (nvn_ft_tracked), so
+// tex_storage_gpu takes it for a texture uploaded from its storage and says no; the fill asks only the kind (tex_storage_gpu_kind, tex_init_fill). In Ocarina of Time every remade
+// normal tile was a GPU texture of zeros so (DM_NVN_TRACE_TEX: 47 fill checks, 47 zeros), the woven ground. The old tile's ghost and sharing entries are let go first (alias_sweep)
+static uint8_t lv_red(id<MTLTexture> image, unsigned lv) {
+    id<MTLCommandQueue> queue = [g_dev newCommandQueue]; id<MTLBuffer> out = [g_dev newBufferWithLength:4 options:MTLResourceStorageModeShared];
+    if (!image) return 0;
+    id<MTLCommandBuffer> cb = [queue commandBuffer]; id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder];
+    [be copyFromTexture:image.parentTexture ?: image sourceSlice:0 sourceLevel:lv sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(1, 1, 1) toBuffer:out destinationOffset:0 destinationBytesPerRow:2 destinationBytesPerImage:2];
+    [be endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    return *(uint8_t *)out.contents;
+}
+static void remade_tile(void) {
+    const size_t len = 1 << 20;
+    uint8_t *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (mem == MAP_FAILED) abort();
+    pool_t pool = {0}; pool_builder_t pb = {.mem=mem, .size=len, .flags=NVN_MEMORY_POOL_FLAGS_CPU_CACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+    CHECK(h_nvnMemoryPoolInitialize((NVNmemoryPool *)&pool, (const NVNmemoryPoolBuilder *)&pb), "CPU-cached pool initialized");
+    NVNtextureBuilder tb; h_nvnTextureBuilderSetDefaults(&tb);
+    h_nvnTextureBuilderSetWidth(&tb, 260); h_nvnTextureBuilderSetHeight(&tb, 260); h_nvnTextureBuilderSetLevels(&tb, 9); h_nvnTextureBuilderSetFormat(&tb, NVN_FORMAT_RG8);
+    h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 0x40000);
+    NVNtexture a = {0}, b = {0};
+    CHECK(h_nvnTextureInitialize(&a, &tb), "tile a initialized");
+    tex_t *ta = (tex_t *)&a;
+    mtl_tex_gpu_written(ta); mtl_sub_begin();
+    for (unsigned lv = 0; lv < 9; lv++) {
+        p_clear_tex tc = {.tex = ta, .has_view = 1, .r = {0, 0, 0, (int)MAX(260u >> lv, 1u), (int)MAX(260u >> lv, 1u), 1}, .mask = 15, .c.f = {(float)(lv + 1) / 51.f, 0.2f, 0, 1}};
+        tc.view.set_levels = 1; tc.view.base_level = lv; clear_tex(&tc);
+    }
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "the tile's levels drawn");
+    uint64_t old = ta->serial; h_nvnTextureFinalize(&a); defer_drain();
+    pthread_mutex_lock(&g_smu); ghost_del_locked(old); pthread_mutex_unlock(&g_smu);
+    mtl_sub_begin(); alias_evict_idle(0); CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "sharing entries let go"); defer_drain();
+    uint64_t fills = g_stored_fills;
+    CHECK(h_nvnTextureInitialize(&b, &tb), "tile b initialized over the same storage");
+    tex_t *tb2 = (tex_t *)&b;
+    CHECK(nvn_ft_tracked(tb2->serial), "the new tile is on the first-use list");
+    mtl_sub_begin(); id<MTLTexture> img = tex_mtl(tb2); CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "the new tile resolves");
+    CHECK(lv_red(img, 0) == 5, "the new tile holds the drawing: level 0");
+    CHECK(lv_red(img, 8) == 45, "and its smallest level");
+    CHECK(g_stored_fills == fills + 1, "filled from its storage once");
+    h_nvnTextureFinalize(&b); h_nvnMemoryPoolFinalize((NVNmemoryPool *)&pool);
+    defer_drain(); munmap(mem, len);
+}
 int main(int argc, const char **argv) { @autoreleasepool {
     enum { N = 6442, BASE = 1000 };
     static tex_t t[N];
@@ -299,6 +342,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
     own.serial = 900002; mtl_tex_init(&own); moved = own; own.magic = 0; mtl_tex_release(&moved);
     CHECK(!nvn_hm_get(&g_tex_live, &moved.serial), "a copy outliving the object it was initialized in ends the texture");
     retired_classification(); descriptor_replacement();
-    if (argc > 1 && !strcmp(argv[1], "--metal")) { mtl_init(); finalized_upload(0); finalized_upload(1); finalize_during_walk(); poll_asks_again(); poll_beside(); handover_holders(); }
+    if (argc > 1 && !strcmp(argv[1], "--metal")) { mtl_init(); finalized_upload(0); finalized_upload(1); finalize_during_walk(); poll_asks_again(); poll_beside(); handover_holders(); remade_tile(); }
     printf("t_cpu_tex: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }
