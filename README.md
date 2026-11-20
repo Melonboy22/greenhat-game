@@ -15,6 +15,19 @@ A personal build for playing The Legend of Zelda: Ocarina of Time (Switch 2, v13
 - Fixes: missing or woven ground textures, flower-bush holes, a black window when a smaller Resolution was picked in handheld mode, and a few upstream rendering fixes.
 - Extras: Upscaling presets that show the resolution the 3D is drawn at (Quality about 965p, Balanced about 835p, Performance 720p, in a 1440p frame), a 1280 × 720 Resolution for docked play, and opt-in frame generation.
 
+**How it runs now** (`378296c2`, on battery, Low Power Mode off):
+
+| Area | Average fps | Lowest fps | Memory | GPU memory |
+|---|---|---|---|---|
+| Lon Lon Ranch | 60 | 60 | 9.2 GB | 5.7 GB |
+| Hyrule Field | 59.8 | 58.6 | 9.8–10.6 GB | 5.4–6.0 GB |
+| Castle Town | 57.7 | 52.4 | 10.4–10.8 GB | 5.7–5.9 GB |
+
+- Lowest fps is the lowest 5-second average.
+- Changing areas still pauses for about 0.2–0.3 s.
+- Peak memory 11.2 GB, with no memory warnings.
+- Low Power Mode about doubles the GPU's frame time.
+
 The details, measurements and what is still open are in the [game's note](dm/games/0400486024DEC000/README.md#memory).
 
 **License:** MIT, Copyright (c) 2026 seedds, as in the original project. Changes here are made by Melonboy22 with Claude (Anthropic). No game files are included: you need your own copy of the game. Not affiliated with Nintendo.
