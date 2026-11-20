@@ -701,7 +701,8 @@ void bf_want_note(const char *key) { want_note(&g_bf_want, key); }
 typedef struct { uintptr_t lo, hi; uintptr_t base; __unsafe_unretained id<MTLBuffer> buf; uint64_t gpu; const void *key; int res; uint64_t born; uintptr_t end; uint64_t unk; uint32_t n_tex_reads, n_other; int noraw; } pool_ent;   // res: already in the residency set (on demand, see pool_res); born: when it was added (ns); end, unk: a large pool's chunk (see BIG_MIN); n_tex_reads / n_other: lookups by texture uploads / by anything else (mem_census)
 static pool_ent *g_pools; static int g_npool, g_cap;
 static int g_pidx_ok, g_plast = -1;   // whether the address→pool index is valid, the last hit (pool_find)
-static NSMutableArray *g_keep;                  // Holds the buffer references (pool_ent has non-owning pointers)
+static void pidx_insert(int idx); static void pidx_replace_with_last(int i);   // keep the index sorted as pools come and go (after pidx_sort)
+static NSMutableSet *g_keep;                    // Holds the buffer references (pool_ent has non-owning pointers); a set: an array's removeObject: compared every buffer at each pool finalize
 static uint64_t g_pool_adds;
 static int g_pool_res_n;   // registered pools already in the residency set (for the memory readout; under g_mu)
 static __thread int t_tex_upload_lookup;   // set around a texture upload's read of its storage (pool lookups counted apart, mem_census)
@@ -844,7 +845,7 @@ void mtl_init(void) {
         if (!g_classic_ok) MDIE("the Metal device %s has no Metal 4 (%s%s%s), which the NVN layer needs; a virtual Mac's paravirtualized GPU has none", g_dev.name.UTF8String, no4, *why ? ": " : "", why);
         g_res = nil; g_q4 = nil; g_classic = 1;
         g_ev = [g_dev newSharedEvent];
-        g_keep = [NSMutableArray array];
+        g_keep = [NSMutableSet set];
         MLOG("[RED] Metal device %s has no Metal 4 (%s%s%s): the classic part only, nothing is presented (enough for a run-time shader capture)", g_dev.name.UTF8String, no4, *why ? ": " : "", why);
         return;
     }
@@ -889,7 +890,7 @@ void mtl_init(void) {
         res_add(g_present_uv[i]);
     }
     g_ev = [g_dev newSharedEvent];
-    g_keep = [NSMutableArray array];
+    g_keep = [NSMutableSet set];
     g_nvn_deswz_gpu = nvn_deswz_gpu_init(g_dev) == 0;
     dm_res_report_register(mtl_res_counts);
     if (!g_nvn_deswz_gpu) MLOG("[RED] GPU deswizzle init failed; swizzled textures fall back to the CPU");
@@ -1034,8 +1035,9 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     }
     pthread_mutex_lock(&g_mu);
     if (g_npool == g_cap) { g_cap = g_cap ? g_cap * 2 : 64; g_pools = realloc_or_die(g_pools, g_cap * sizeof *g_pools, "the memory pool table"); }
-    g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);   // the address index and the per-thread caches are invalid (pool_find, pc_get)
-    g_pools[g_npool++] = (pool_ent){lo, hi, a, buf, buf.gpuAddress, mem, 0, clock_gettime_nsec_np(CLOCK_MONOTONIC), hi, 1};   // not in the residency set yet: put in the first time it is addressed (pool_res)
+    g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);   // the per-thread caches are invalid (pool_find, pc_get); the address index takes the pool in its place
+    g_pools[g_npool++] = (pool_ent){lo, hi, a, buf, buf.gpuAddress, mem, 0, clock_gettime_nsec_np(CLOCK_MONOTONIC), hi, 1};
+    pidx_insert(g_npool - 1);   // not in the residency set yet: put in the first time it is addressed (pool_res)
     g_pool_adds++;
     [g_keep addObject:buf];
     pthread_mutex_unlock(&g_mu);
@@ -1064,7 +1066,7 @@ void mtl_pool_del(const void *mem) {
     for (int i = 0; i < g_npool; i++)
         if (g_pools[i].key == mem) { id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; [gone addObject:b]; if (g_pools[i].res) g_pool_res_n--;
             if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
-            [g_dead_pools addObject:b]; g_pools[i] = g_pools[--g_npool]; g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
+            [g_dead_pools addObject:b]; pidx_replace_with_last(i); g_pools[i] = g_pools[--g_npool]; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
             if (i < g_npool) big_moved(i);   // the entry moved into this place
             if (bg < 0) break;   // a large pool has an entry per chunk
             i--; }
@@ -1089,12 +1091,32 @@ static void pidx_sort(void) {
     for (int i = 0; i < g_npool; i++) g_pidx[i] = i;
     qsort(g_pidx, (size_t)g_npool, sizeof *g_pidx, pidx_cmp); g_pidx_ok = 1;
 }
+// A pool coming or going kept the index valid, instead of a full sort at the next lookup: an area change in Ocarina of Time adds and finalizes hundreds of pools among about 4,500,
+// and each lookup after one sorted them all again (qsort under pidx_sort, about 15 % of the replay thread while walking into Hyrule Castle Town, 16 GB MacBook Air, 2026-11-20).
+// Caller holds g_mu. pidx_insert: g_pools[idx] was just appended (g_npool counts it). pidx_replace_with_last: g_pools[i] is about to take the last entry's place (g_pools[i] =
+// g_pools[g_npool - 1], g_npool--); the last entry keeps its place in the order, under its new index
+static void pidx_insert(int idx) {
+    if (!g_pidx_ok) return;
+    if (g_pidx_cap < g_npool) { g_pidx_cap = g_npool * 2; g_pidx = realloc_or_die(g_pidx, (size_t)g_pidx_cap * sizeof *g_pidx, "the memory pool index"); }
+    int n = g_npool - 1, lo = 0, hi = n; uintptr_t a = g_pools[idx].lo;   // the first place whose start is above a
+    while (lo < hi) { int m = (lo + hi) / 2; if (g_pools[g_pidx[m]].lo <= a) lo = m + 1; else hi = m; }
+    memmove(g_pidx + lo + 1, g_pidx + lo, (size_t)(n - lo) * sizeof *g_pidx); g_pidx[lo] = idx;
+}
+static void pidx_replace_with_last(int i) {
+    if (!g_pidx_ok) return;
+    int last = g_npool - 1, n = g_npool, at = -1;
+    for (int k = 0; k < n; k++) if (g_pidx[k] == i) { at = k; break; }
+    if (at < 0) { g_pidx_ok = 0; return; }
+    memmove(g_pidx + at, g_pidx + at + 1, (size_t)(n - 1 - at) * sizeof *g_pidx); n--;
+    if (last != i) for (int k = 0; k < n; k++) if (g_pidx[k] == last) { g_pidx[k] = i; break; }
+}
 static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end, uint64_t unk) {   // caller holds g_mu: a new entry for [lo, end) of the pool, looked up for addresses in [lo, hi)
     id<MTLBuffer> buf = pool_buf(lo, end);
     if (!buf) { MLOG("[RED] memory pool %p: the zero-copy buffer over %#lx..%#lx was refused", b->mem, (unsigned long)lo, (unsigned long)end); return -1; }
     if (g_npool == g_cap) { g_cap = g_cap ? g_cap * 2 : 64; g_pools = realloc_or_die(g_pools, g_cap * sizeof *g_pools, "the memory pool table"); }
-    g_pidx_ok = 0; atomic_fetch_add(&g_pool_gen, 1);
+    atomic_fetch_add(&g_pool_gen, 1);
     g_pools[g_npool++] = (pool_ent){lo < b->lo ? b->lo : lo, hi > b->hi ? b->hi : hi, lo, buf, buf.gpuAddress, b->mem, 0, clock_gettime_nsec_np(CLOCK_MONOTONIC), end > b->hi ? b->hi : end, unk};
+    pidx_insert(g_npool - 1);
     g_pools[g_npool - 1].noraw = b->noraw;   // a chunk of a large pool the raw pool table does not reach whole (gmem_nobig): listed once resident
     [g_keep addObject:buf];
     return g_npool - 1;
@@ -1133,7 +1155,7 @@ static int big_lookup(big_pool *b, uint64_t addr, uint64_t len) {
     int n = big_new(b, lo, lo + BIG_S, end, end >= b->b ? 1 : BIG_UNKNOWN); if (n < 0) return -1;
     if (i >= 0) {   // lengthened: what is encoded with the shorter chunk keeps it, resident, until the pool goes
         [b->old addObject:g_pools[i].buf]; [g_keep removeObject:g_pools[i].buf]; g_pools[n].res = 0; if (g_pools[i].res) g_pool_res_n--;
-        g_pools[i] = g_pools[n]; g_npool--; n = i;
+        pidx_replace_with_last(i); g_pools[i] = g_pools[n]; g_npool--; n = i;
     }
     b->chunk[k] = n + 1;
     return n;
@@ -2769,7 +2791,7 @@ static nvn_hmap g_image_desc = {.klen = 8};   // serial → malloc'ed tex_t, und
 // Town makes about 11 render targets a frame, each walking both tables whole: on a 16 GB MacBook Air on battery (2026-11-20, `sample`) image_texture, alias_take_over's
 // associated-object lookups and the cleanup walk were about 40 % of the replay thread, which the game's thread waited on (34-48 fps). Kept at every put and delete of either
 // table. Under g_smu
-typedef struct { alias_key *ak; uint32_t nak, cak; uint64_t *ser; uint32_t nser, cser; } pool_ix;
+typedef struct { alias_key *ak; uint32_t nak, cak; uint64_t *ser; uint32_t nser, cser; alias_key *pk; uint32_t npk, cpk; } pool_ix;   // pk: g_pkg_share's keys
 static nvn_hmap g_pool_ix = {.klen = 8};   // pool (uint64_t of the pool_t pointer, as alias_key.pool) → malloc'ed pool_ix
 static pool_ix *pix_get(uint64_t pool, int make) {
     pool_ix *x = nvn_hm_get(&g_pool_ix, &pool);
@@ -2777,8 +2799,8 @@ static pool_ix *pix_get(uint64_t pool, int make) {
     return x;
 }
 static void pix_maybe_free(uint64_t pool, pool_ix *x) {
-    if (!x || x->nak || x->nser) return;
-    nvn_hm_del(&g_pool_ix, &pool); free(x->ak); free(x->ser); free(x);
+    if (!x || x->nak || x->nser || x->npk) return;
+    nvn_hm_del(&g_pool_ix, &pool); free(x->ak); free(x->ser); free(x->pk); free(x);
 }
 static void pix_alias_add(const alias_key *k) {
     pool_ix *x = pix_get(k->pool, 1);
@@ -2789,6 +2811,11 @@ static void pix_alias_del(const alias_key *k) {
     pool_ix *x = pix_get(k->pool, 0); if (!x) return;
     for (uint32_t i = 0; i < x->nak; i++) if (!memcmp(&x->ak[i], k, sizeof *k)) { x->ak[i] = x->ak[--x->nak]; break; }
     pix_maybe_free(k->pool, x);
+}
+static void pix_pkg_add(const alias_key *k) {   // a new key of g_pkg_share (mtl_alias_drop_pool walked that table whole for every finalized pool, under g_smu)
+    pool_ix *x = pix_get(k->pool, 1);
+    if (x->npk == x->cpk) { uint32_t c = x->cpk ? 2 * x->cpk : 8; alias_key *g = realloc(x->pk, c * sizeof *g); if (!g) MDIE("the pool index: out of memory"); x->pk = g; x->cpk = c; }
+    x->pk[x->npk++] = *k;
 }
 static void pix_desc_add(const tex_t *d, uint64_t serial) {
     pool_ix *x = pix_get((uint64_t)(uintptr_t)d->pool, 1);
@@ -3161,12 +3188,10 @@ void mtl_alias_drop_pool(const void *pool) {
     for (unsigned i = 0; i < MIN(g_nupg_hint, (unsigned)UPG_HINTS); i++)
         if (g_upg_hint[i].pool == (uint64_t)(uintptr_t)pool) g_upg_hint[i] = (upg_hint){0};
     CFMutableSetRef gone = CFSetCreateMutable(NULL, 0, NULL); if (!gone) MDIE("the finalized pool's textures");
-    { uint32_t ns = 0; alias_key *ks = NULL;   // a later pool at this address holds other bytes (g_pkg_share); the packages still alive end with the pool
-        for (uint32_t i = 0; i < g_pkg_share.cap; i++) { if (!g_pkg_share.vals[i]) continue; alias_key k; memcpy(&k, g_pkg_share.keys + (size_t)i * g_pkg_share.klen, sizeof k);
-            if (k.pool == (uint64_t)(uintptr_t)pool) { alias_key *nk = realloc(ks, (ns + 1) * sizeof *ks); if (!nk) break; ks = nk; ks[ns++] = k;
-                NvPkg *pk = ((NvPkgRef *)(__bridge id)g_pkg_share.vals[i])->pkg; if (pk) gone_add(gone, pk); } }
-        for (uint32_t i = 0; i < ns; i++) hm_del_id(&g_pkg_share, &ks[i]);
-        free(ks); }
+    { pool_ix *x = pix_get((uint64_t)(uintptr_t)pool, 0);   // a later pool at this address holds other bytes (g_pkg_share); the packages still alive end with the pool
+      for (uint32_t i = 0; x && i < x->npk; i++) { NvPkgRef *r = hm_get_id(&g_pkg_share, &x->pk[i]); if (!r) continue;
+          NvPkg *pk = r->pkg; if (pk) gone_add(gone, pk); hm_del_id(&g_pkg_share, &x->pk[i]); }
+      if (x) { x->npk = 0; pix_maybe_free((uint64_t)(uintptr_t)pool, x); } }
     { void *h = nvn_hm_del(&g_pool_heap, &pool); if (h) CFRelease(h); }   // the pool's placement heap goes when its last texture does (each holds it)
     uint32_t n = 0; alias_key *ks = NULL;
     { const pool_ix *x = pix_get((uint64_t)(uintptr_t)pool, 0);
@@ -3226,7 +3251,7 @@ static NvPkg *pkg_shared(const tex_t *t) {
 }
 static void pkg_share_put(const tex_t *t, NvPkg *pk) {
     alias_key k = tex_alias_key(t); NvPkgRef *r = [NvPkgRef new]; r->pkg = pk;
-    pthread_mutex_lock(&g_smu); hm_put_id(&g_pkg_share, &k, r); pthread_mutex_unlock(&g_smu);
+    pthread_mutex_lock(&g_smu); if (!nvn_hm_get(&g_pkg_share, &k)) pix_pkg_add(&k); hm_put_id(&g_pkg_share, &k, r); pthread_mutex_unlock(&g_smu);
 }
 // A sparse texture's CPU-write check walks its page table (nvn_sparse_since). A submission sees the CPU writes and the mappings made before it (as NVN's: a map is a CPU call,
 // not a command), so the replay checks each one once a submission (sub: the submission, g_sub_serial, of its last check). Games remap streamed pages all the time, so the

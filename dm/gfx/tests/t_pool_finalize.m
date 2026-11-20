@@ -49,6 +49,7 @@ int main(void) { @autoreleasepool {
     CHECK("a texture's release takes it out of its pool's index", gone);
     settle();
     CHECK("the pool index matches both tables", pool_ix_mismatches() == 0);
+    CHECK("the pool address index stays in order", pidx_mismatches() == 0);
     printf("t_pool_finalize: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 }}
