@@ -290,8 +290,6 @@ static _Atomic uint64_t g_pool_heap_live, g_family_heap_live;   // bytes of the 
 static inline MTL4VisibilityOptions resource_vis(void) { return MTL4VisibilityOptionDevice | (g_image_heap_n || g_big_n ? MTL4VisibilityOptionResourceAlias : 0); }
 // Residency churn by call site (the power line every 300 frames, mtl_res_stats): each commit with changes is a kernel call whose cost grows with what was added or removed
 enum { RS_SITES = 16 }; static struct { int line; uint64_t n, bytes; } g_rs_site[RS_SITES]; static uint64_t g_rs_rm, g_rs_commits, g_rs_commit_ns;
-// TEMPORARY (2026-11-20, remove after the town-gate measurement): running totals for the long-frame line, never reset (mtl_res_commit_totals)
-static uint64_t g_rs_tot_n, g_rs_tot_ns, g_rs_tot_add, g_rs_tot_rm;
 #define res_add(r) res_add_at((r), __LINE__)
 // Both run on guest threads too (pool_res from mtl_addr, uploads), whose implicit autorelease pools never drain; containsObject: / removeObject: on a weak NSHashTable leave the object
 // autoreleased in the calling thread's pool (measured in a standalone test: the object outlived its last strong reference until the thread ended), so each has a pool of its own
@@ -305,7 +303,7 @@ static void res_add_at(id<MTLAllocation> allocation, int line) { @autoreleasepoo
     { int k = 0; while (k < RS_SITES - 1 && g_rs_site[k].line && g_rs_site[k].line != line) k++; g_rs_site[k].line = line; g_rs_site[k].n++; g_rs_site[k].bytes += r.allocatedSize; }
     [g_res addAllocation:(id<MTLAllocation>)r];
     [g_res_objects addObject:r];
-    g_res_dirty = g_res_grew = 1; g_rs_tot_add++;
+    g_res_dirty = g_res_grew = 1;
     pthread_mutex_unlock(&g_res_mu);
 } }
 static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
@@ -315,7 +313,7 @@ static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
     if (![g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }
     [g_res removeAllocation:(id<MTLAllocation>)r];
     [g_res_objects removeObject:r];
-    g_res_dirty = 1; g_rs_rm++; g_rs_tot_rm++;
+    g_res_dirty = 1; g_rs_rm++;
     pthread_mutex_unlock(&g_res_mu);
 } }
 // The resolution families' own heaps by memory pool (image_texture): which pools hold them, how large and of what kind (virtual, sparse, over POOL_HEAP_MAX: what keeps them out of a
@@ -514,13 +512,9 @@ static void res_commit(void) {
             static uint64_t refused; if (!refused++) MLOG("[RED] GPU memory guard: %llu MB allocated at Metal's working set of %llu MB: this residency commit and any after it that add to the set are not made", (unsigned long long)(used >> 20), (unsigned long long)(g_guard.wall >> 20));
             pthread_mutex_unlock(&g_res_mu); return;
         }
-        uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); [g_res commit]; g_res_dirty = g_res_grew = 0; g_rs_commits++; uint64_t dt = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0; g_rs_commit_ns += dt; g_rs_tot_n++; g_rs_tot_ns += dt;
+        uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); [g_res commit]; g_res_dirty = g_res_grew = 0; g_rs_commits++; g_rs_commit_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
     }
     pthread_mutex_unlock(&g_res_mu);
-}
-void mtl_res_commit_totals(uint64_t *n, uint64_t *ns, uint64_t *added, uint64_t *removed) {   // TEMPORARY (see g_rs_tot_n): the long-frame line takes the per-frame difference
-    *n = __atomic_load_n(&g_rs_tot_n, __ATOMIC_RELAXED); *ns = __atomic_load_n(&g_rs_tot_ns, __ATOMIC_RELAXED);   // no lock: written under g_res_mu, read here as plain counters
-    *added = __atomic_load_n(&g_rs_tot_add, __ATOMIC_RELAXED); *removed = __atomic_load_n(&g_rs_tot_rm, __ATOMIC_RELAXED);
 }
 // What the residency set holds: totals by kind and the largest objects. At the first GPU out-of-memory error (the error names none of them), and for DM_CTL "restop" (hle_hid.c). The set holds
 // the game's pools (shared buffers over guest memory), textures, heaps and staging alike
