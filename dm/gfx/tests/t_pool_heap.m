@@ -1,6 +1,8 @@
 // A CPU_NO_ACCESS pool's render targets share one placement heap (nvn_mtl.m pool_heap_texture): textures over the same storage share memory, storage apart stays apart,
 // a texture made over memory another has used leaves it as it is, and what is not a render target, or not in such a pool, keeps an allocation of its own.
 // "./t_pool_heap off" runs with DM_NVN_POOL_HEAP=0: no pool heap is made (a render target may still take a recycled heap of its own, rh_texture).
+// A virtual pool mapped whole onto one physical pool (flags 0x2a1, Ocarina of Time's scene targets) takes a heap as a physical one does; "./t_pool_heap novirt" runs with
+// DM_NVN_POOL_HEAP_VIRTUAL=0, which leaves it out.
 #include "../nvn/nvn_mtl.m"
 #include "t_pool_ix_check.h"
 void *front_metal_layer(void) { return NULL; }
@@ -43,14 +45,18 @@ static int zeros(id<MTLTexture> t) {
 }
 
 int main(int argc, char **argv) { @autoreleasepool {
-    int off = argc > 1 && !strcmp(argv[1], "off");
+    int off = argc > 1 && !strcmp(argv[1], "off"), novirt = argc > 1 && !strcmp(argv[1], "novirt");
     if (off) setenv("DM_NVN_POOL_HEAP", "0", 1);
+    if (novirt) setenv("DM_NVN_POOL_HEAP_VIRTUAL", "0", 1);
     mtl_init();
     uint8_t *mem = aligned_alloc(1 << 16, POOL); memset(mem, 0xa5, POOL);   // storage the GPU-only pool's textures must not take their content from
     uint8_t *cpu_mem = aligned_alloc(1 << 16, 4 << 20); memset(cpu_mem, 0, 4 << 20);
-    mtl_pool_add(mem, POOL); mtl_pool_add(cpu_mem, 4 << 20);
+    uint8_t *vmem = aligned_alloc(1 << 16, POOL); memset(vmem, 0xa5, POOL);   // a virtual pool's storage once mapped whole (an alias of a physical pool's memory)
+    mtl_pool_add(mem, POOL); mtl_pool_add(cpu_mem, 4 << 20); mtl_pool_add(vmem, POOL);
     pool_t pool = {.magic = MAGIC('P','O','O','L'), .flags = NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED | NVN_MEMORY_POOL_FLAGS_COMPRESSIBLE, .mem = mem, .size = POOL};
     pool_t cpu = {.magic = MAGIC('P','O','O','L'), .flags = NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, .mem = cpu_mem, .size = 4 << 20};
+    pool_t virt = {.magic = MAGIC('P','O','O','L'), .flags = NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED | NVN_MEMORY_POOL_FLAGS_COMPRESSIBLE | NVN_MEMORY_POOL_FLAGS_VIRTUAL, .mem = vmem, .size = POOL};   // 0x2a1, vp NULL: aliased, not sparse
+    __weak id<MTLHeap> weak_vheap = nil;
     __weak id<MTLHeap> weak_heap = nil;
     @autoreleasepool {
     mtl_sub_begin();   // inside this pool: a submission pushes one of its own, popped at its commit
@@ -58,6 +64,11 @@ int main(int argc, char **argv) { @autoreleasepool {
     id<MTLTexture> ma = tex_mtl(&a);
     if (off) {
         CHECK(ma && g_pool_heap_n == 0, "DM_NVN_POOL_HEAP=0: no pool heap is made (the target may take a recycled heap of its own, rh_texture)");
+    } else if (novirt) {
+        tex_t v = target(&virt, 995020, 0, 512, 512, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+        id<MTLTexture> mv = tex_mtl(&v);
+        CHECK(ma.heap != nil && mv && (!mv.heap || mv.heap != ma.heap) && g_pool_heap_n == 1, "DM_NVN_POOL_HEAP_VIRTUAL=0: a virtual pool's target takes no pool heap, the physical pool's still does");
+        mtl_tex_release(&v); mv = nil;
     } else {
         CHECK(ma.heap != nil, "a render target of a CPU_NO_ACCESS pool is placed in the pool's heap");
         CHECK(ma.heap.size <= (NSUInteger)(POOL * POOL_HEAP_SCALE) + (2 << 20), "the heap is about the pool's size, scaled");
@@ -95,18 +106,33 @@ int main(int argc, char **argv) { @autoreleasepool {
         tex_t visible = target(&cpu, 995005, 0, 256, 256, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
         CHECK(!tex_mtl(&visible).heap, "a render target of a pool the CPU can write keeps an allocation of its own");
         CHECK([g_res_objects containsObject:ma.heap] && ![g_res_objects containsObject:ma], "the heap is resident, not each texture");
+        // a virtual pool mapped whole: its targets share a heap of its own, as a physical pool's do (Ocarina of Time's scene targets, 44 of a size over one 86 MB span)
+        tex_t v1 = target(&virt, 995020, 0, 512, 512, NVN_TEXTURE_FLAGS_COMPRESSIBLE), v2 = target(&virt, 995021, 0, 256, 256, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+        tex_t v3 = target(&virt, 995022, 8 << 20, 512, 512, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+        id<MTLTexture> mv1 = tex_mtl(&v1), mv2 = tex_mtl(&v2), mv3 = tex_mtl(&v3);
+        NvImageHeap *vo = objc_getAssociatedObject(mv1, &g_image_heap_owner_key);
+        CHECK(mv1.heap != nil && mv1.heap != ma.heap && [vo isKindOfClass:[NvPoolHeap class]] && vo->pool_heap, "a render target of a virtual pool mapped whole is placed in a pool heap of that pool's own");
+        CHECK(mv2.heap == mv1.heap && mv3.heap == mv1.heap, "the virtual pool's other targets share its heap");
+        CHECK(mv2.heap == mv1.heap && mv2.heapOffset < mv1.heapOffset + mv1.allocatedSize && mv1.heapOffset < mv2.heapOffset + mv2.allocatedSize, "storage shared in the virtual pool is shared in its heap");
+        CHECK(mv3.heapOffset >= mv1.heapOffset + mv1.allocatedSize, "storage apart in the virtual pool is apart in its heap");
+        CHECK(zeros(mv1), "a virtual pool's fresh heap memory starts as zeros, not the storage's bytes");
+        write_image(mv1, 0x0badcafe); write_image(mv3, 0x13572468);
+        CHECK(holds(mv1, 0x0badcafe) && holds(mv3, 0x13572468) && holds(ma, 0x11223344), "writes to the virtual pool's targets reach neither each other nor the physical pool's");
+        weak_vheap = mv1.heap;
+        mtl_tex_release(&v1); mtl_tex_release(&v2); mtl_tex_release(&v3); mv1 = mv2 = mv3 = nil;
         weak_heap = ma.heap;
         mtl_tex_release(&b); mtl_tex_release(&c); mtl_tex_release(&plain); mtl_tex_release(&sparse); mtl_tex_release(&visible);
         mb = nil; mc = nil;
     }
     mtl_tex_release(&a); ma = nil;
-    mtl_alias_drop_pool(&pool); mtl_alias_drop_pool(&cpu);
+    mtl_alias_drop_pool(&pool); mtl_alias_drop_pool(&cpu); mtl_alias_drop_pool(&virt);
     mtl_sub_commit(); mtl_drain(); mtl_sub_begin(); mtl_sub_commit(); mtl_drain();
     dispatch_sync(g_feedback_q, ^{}); defer_drain();
     }
     CHECK(!weak_heap || ![g_res_objects containsObject:weak_heap], "the pool's heap leaves the residency set with its last texture");
+    CHECK(!weak_vheap || ![g_res_objects containsObject:weak_vheap], "the virtual pool's heap leaves it too");
     CHECK(g_image_heap_n == 0, "no heap owner is left after the pool goes");
-    free(mem); free(cpu_mem);
+    free(mem); free(cpu_mem); free(vmem);
     CHECK(pool_ix_mismatches() == 0, "the pool index matches both tables");
-    printf("t_pool_heap%s: %d checks, %d failed\n", off ? " (off)" : "", checks, failed); return failed != 0;
+    printf("t_pool_heap%s: %d checks, %d failed\n", off ? " (off)" : novirt ? " (novirt)" : "", checks, failed); return failed != 0;
 } }

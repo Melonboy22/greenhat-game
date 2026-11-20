@@ -5107,8 +5107,12 @@ enum { POOL_HEAP_GRAIN = 64 << 10 };
 static nvn_hmap g_pool_heap = {.klen = sizeof(void *)};   // pool object → NvPoolHeap (retained), under g_smu; dropped with the pool (mtl_alias_drop_pool)
 static id<MTLTexture> pool_heap_texture(const tex_t *t, MTLTextureDescriptor *d) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_POOL_HEAP"); on = !e || atoi(e); }
+    // A virtual pool mapped whole onto one physical pool (an alias: nvn_sparse_pool is 0) is one memory as a physical pool is, and takes a heap the same way. Ocarina of Time keeps its
+    // scene targets in such a 305 MB pool (flags 0x2a1): left out, they took resolution-family heaps and allocations of their own, 677 MB of family heaps and 1,662 MB of render
+    // targets in the town market (2026-11-20, be9a99cd). A sparse one (its own address range, pages mapped one by one) stays out. DM_NVN_POOL_HEAP_VIRTUAL=0 leaves virtual pools out
+    static int virt = -1; if (virt < 0) { const char *e = getenv("DM_NVN_POOL_HEAP_VIRTUAL"); virt = !e || atoi(e); }
     const pool_t *p = t->pool;
-    if (!on || !p || !p->mem || !(p->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) || (p->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || nvn_sparse_pool(p)) return nil;
+    if (!on || !p || !p->mem || !(p->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) || ((p->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && !virt) || nvn_sparse_pool(p)) return nil;
     if (p->size > POOL_HEAP_MAX || !t->L.size || t->off < 0 || (uint64_t)t->off + t->L.size > p->size || d.storageMode != MTLStorageModePrivate) return nil;
     if (!(t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) || (t->d.flags & (NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_DISPLAY))) return nil;
     MTLSizeAndAlign need = [g_dev heapTextureSizeAndAlignWithDescriptor:d];
