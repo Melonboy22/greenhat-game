@@ -34,6 +34,8 @@ int main(void) { @autoreleasepool {
     id<MTLTexture> view = [ta newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm_sRGB]; tex_put(9100300, view);
     mtl_alias_drop_pool(&pa);
     CHECK("the pool's live objects lose their entries", serial_get(a1.serial) == nil && serial_get(a2.serial) == nil);
+    CHECK("finalized serials naming its textures wait for the next commit (one walk for every pool finalized before it)", tex_get(9100100) == ta);
+    mtl_pool_gone_flush();   // as mtl_sub_commit does
     CHECK("finalized serials naming its textures, its package's texture or a view go too", tex_get(9100100) == nil && tex_get(9100200) == nil && tex_get(9100300) == nil);
     CHECK("another pool's entries stay", serial_get(b1.serial) == tb && tex_get(9200100) == tb);
     pthread_mutex_lock(&g_smu); indexed = nvn_hm_get(&g_pool_tex, &ka) == NULL && nvn_hm_get(&g_tex_pool, &a1.serial) == NULL; int live_kept = nvn_hm_get(&g_tex_live, &a1.serial) != NULL; pthread_mutex_unlock(&g_smu);
@@ -49,6 +51,23 @@ int main(void) { @autoreleasepool {
     CHECK("a texture's release takes it out of its pool's index", gone);
     settle();
     CHECK("the pool index matches both tables", pool_ix_mismatches() == 0);
+    {   // The cost of the walk over the serial entries at a pool's finalize, at Ocarina of Time's size: about 5,000 entries, half of them texture views, 300 finalizes (an area
+        // change). It asked every entry respondsToSelector:@selector(parentTexture) first: 0.6 s of the game's unload thread at the walk into Castle Town (2026-11-20)
+        enum { NE = 5000, NF = 300 }; NSMutableArray *keep = [NSMutableArray array]; id<MTLTexture> base = tex();
+        for (int i = 0; i < NE; i++) { id o = (i & 1) ? [base newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm] : tex(); [keep addObject:o]; serial_put((1ull << 61) + (uint64_t)i, o); }
+        CFMutableSetRef g = CFSetCreateMutable(NULL, 0, NULL); id<MTLTexture> other = tex(); CFSetAddValue(g, (__bridge const void *)other);
+        uint32_t hit = 0; uint64_t t0 = bp_now();
+        pthread_mutex_lock(&g_smu); for (int k = 0; k < NF; k++) gone_pending_add_locked(g); hit = gone_flush_locked(); pthread_mutex_unlock(&g_smu);   // as NF finalizes and a commit
+        double ms = (bp_now() - t0) / 1e6;
+        uint64_t t1 = bp_now(); pthread_mutex_lock(&g_smu); for (int k = 0; k < NF; k++) (void)drop_entries_naming_locked(g); pthread_mutex_unlock(&g_smu);
+        printf("%d finalizes over %d serial entries: %.2f ms with one walk at the commit, %.1f ms walking at each\n", NF, NE, ms, (bp_now() - t1) / 1e6);
+        CHECK("an entry is dropped only when its texture or the texture it views went", hit == 0);
+        CFSetAddValue(g, (__bridge const void *)base);
+        pthread_mutex_lock(&g_smu); hit = drop_entries_naming_locked(g); pthread_mutex_unlock(&g_smu);
+        CHECK("the views of a texture that went go with it", hit == NE / 2);
+        CHECK("an area change's finalizes and the commit after them walk the entries once (under 5 ms)", ms < 5);
+        CFRelease(g); for (int i = 0; i < NE; i++) serial_del((1ull << 61) + (uint64_t)i); settle();
+    }
     CHECK("the pool address index stays in order", pidx_mismatches() == 0);
     printf("t_pool_finalize: %d checks, %d failed\n", checks, failed);
     return failed != 0;

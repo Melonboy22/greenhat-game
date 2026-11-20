@@ -603,6 +603,7 @@ static void defer_obj_at(id obj, int keep_resident, uint64_t fence) {
 }
 static void defer_obj_release(id obj) { defer_obj_at(obj, 0, g_fence + 1); }
 static void defer_obj_unref(id obj) { defer_obj_at(obj, 1, g_fence + 1); }
+uint32_t mtl_pool_gone_flush(void);   // the entries naming finalized pools' textures, at each commit (after the serial table)
 static pthread_mutex_t g_smu; static int entry_holds(const void *o); static void retire_wait(id o);   // defined below (the serial table)
 // Its own autorelease pool: mtl_sub_begin drains before it pushes the submission's pool, on the guest submit thread, whose implicit pool is never drained. The weak-table lookups and the residency-set removal
 // autorelease the retired object, so whatever that thread drained (instead of the completion handler, which wins the race only when the CPU is idle) stayed alive for good: in Metroid Dread every
@@ -2575,6 +2576,7 @@ uint64_t mtl_sub_commit(void) {
     up_flush();
     gmem_commit_patch();
     g_cut_copy = 0;
+    mtl_pool_gone_flush();   // the entries naming finalized pools' textures go behind this submission's fence, in one walk for all of them
     ghost_commit_trim();   // idle finalized textures past the ghost table's floor go behind this submission's fence
     treg_finish_submission();   // Late descriptor views retire behind this submission's fence.
     rt_preserve_bound();   // The game may reuse completed command memory; queue bindings must not point into its texture snapshots.
@@ -3159,7 +3161,10 @@ static uint32_t drop_entries_naming_locked(CFSetRef gone) {
     for (unsigned t = 0; t < 2; t++) {
         for (uint32_t i = 0; tables[t]->n && i < tables[t]->cap; i++) {
             void *o = tables[t]->vals[i]; if (!o) continue;
-            int hit = 0; for (id x = (__bridge id)o; x && !hit; x = [x respondsToSelector:@selector(parentTexture)] ? ((id<MTLTexture>)x).parentTexture : nil) hit = CFSetContainsValue(gone, (__bridge const void *)x);
+            // The set first, then a view's parents: only a Metal texture has one (obj_is_tex, its class's answer kept). It asked every entry respondsToSelector: first, and an
+            // area change's finalizes walked about 5,000 entries each: Ocarina of Time's unload thread spent most of the walk into Castle Town here, holding g_smu (2026-11-20)
+            int hit = CFSetContainsValue(gone, o);
+            if (!hit && obj_is_tex((__bridge id)o)) for (id<MTLTexture> x = ((__bridge id<MTLTexture>)o).parentTexture; x && !hit; x = x.parentTexture) hit = CFSetContainsValue(gone, (__bridge const void *)x);
             if (!hit) continue;
             if (nk == kcap) { kcap = kcap ? kcap * 2 : 64; uint64_t *n = realloc(ks, kcap * sizeof *ks); if (!n) MDIE("the finalized pool's serials"); ks = n; }
             memcpy(&ks[nk++], tables[t]->keys + (size_t)i * tables[t]->klen, sizeof *ks);
@@ -3169,6 +3174,27 @@ static uint32_t drop_entries_naming_locked(CFSetRef gone) {
     for (uint32_t i = 0; i < nk; i++) { if (i < nlive) live_del_locked(ks[i]); else ghost_del_locked(ks[i]); }
     free(ks); return nk;
 }
+// The textures of finalized pools whose naming entries are still to go: collected at each Finalize and dropped in one walk at the next commit (mtl_pool_gone_flush). Each Finalize
+// walked every serial and ghost entry by itself: an area change in Ocarina of Time finalizes hundreds of pools, and its unload thread held g_smu through those walks while the replay
+// thread waited for it (most of the 0.3 s frame at the walk into Castle Town, 16 GB MacBook Air, 2026-11-20). Until then a lookup of such a serial finds the texture it had, as
+// one of a pool that is gone does (tex_made). The set holds a reference to each, so no other object can take a freed one's address meanwhile; the references go behind the
+// commit's fence (defer_obj_unref), after the entries' own. Under g_smu
+static CFMutableSetRef g_gone_pending;
+static void gone_pending_put(const void *v, void *ctx) { CFSetAddValue((CFMutableSetRef)ctx, v); }
+static void gone_pending_add_locked(CFSetRef gone) {
+    if (!g_gone_pending) { g_gone_pending = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks); if (!g_gone_pending) MDIE("the finalized pools' textures"); }
+    CFSetApplyFunction(gone, gone_pending_put, g_gone_pending);
+}
+static uint32_t gone_flush_locked(void) {
+    CFIndex n = g_gone_pending ? CFSetGetCount(g_gone_pending) : 0; if (!n) return 0;
+    uint32_t dropped = drop_entries_naming_locked(g_gone_pending);
+    const void **v = malloc((size_t)n * sizeof *v); if (!v) MDIE("the finalized pools' textures");
+    CFSetGetValues(g_gone_pending, v); for (CFIndex i = 0; i < n; i++) defer_obj_unref((__bridge id)v[i]); free(v);
+    CFSetRemoveAllValues(g_gone_pending);
+    g_pool_fin_entries += dropped;
+    return dropped;
+}
+uint32_t mtl_pool_gone_flush(void) { pthread_mutex_lock(&g_smu); uint32_t n = gone_flush_locked(); pthread_mutex_unlock(&g_smu); return n; }
 // On memory pool Finalize (upstream nxnative 13c35e90, adapted). On NVN a pool's Finalize ends its memory and every texture made on it, whether or not the game has finalized the
 // texture objects yet. The host ended only the pool's sharing-table entries: a texture object the game finalizes later kept its serial entry, and the entry held the Metal texture.
 // Packaged textures, which the sharing table never names, and finalized serials' ghost entries were kept the same way. Ocarina of Time finalizes the 288 MB pool of its
@@ -3212,7 +3238,7 @@ void mtl_alias_drop_pool(const void *pool) {
         CFIndex ng = CFSetGetCount(gone); const void **gs = malloc((size_t)ng * sizeof *gs);
         if (gs) { CFSetGetValues(gone, gs); for (CFIndex j = 0; j < ng; j++) { id o = (__bridge id)gs[j];   // what only these entries held (not the sharing table's: counted with it)
               if ([o conformsToProtocol:@protocol(MTLTexture)] && !((id<MTLTexture>)o).heap && !((id<MTLTexture>)o).parentTexture && !alias_has(o)) bytes += ((id<MTLTexture>)o).allocatedSize; } free(gs); }
-        dropped += drop_entries_naming_locked(gone);
+        gone_pending_add_locked(gone);   // the entries naming them go at the next commit, in one walk with the other pools' (gone_flush_locked)
     }
     CFRelease(gone);
     for (uint32_t j = 0; j < n; j++) {
