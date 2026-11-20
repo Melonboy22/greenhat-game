@@ -4,6 +4,7 @@
 // (oot-plus until 2026-11-18) image_texture took them first and gave each offset a heap of its own beside the pool's heap: about 490 heaps, 0.4-2.5 GB, on a 16 GB M5 docked.
 // A virtual pool (no pool heap) and DM_NVN_POOL_HEAP=0 keep the family heaps; a texture of no family keeps its compression. Modes: (none), "off" (DM_NVN_POOL_HEAP=0), "nocomp"
 #include "../nvn/nvn_mtl.m"
+#include "t_pool_ix_check.h"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t *g_mod; int g_nmod;
@@ -71,6 +72,7 @@ int main(int argc, char **argv) { @autoreleasepool {
       CHECK(after == before - tva.heap.size && n == 0, "a freed family heap comes off its pool's count");
       famp_add(&vpool, 64u << 20, NVN_MEMORY_POOL_FLAGS_VIRTUAL, 0, (int64_t)tva.heap.size); }   // put back: the real heap's dealloc takes it off at the end
     mtl_sub_commit(); mtl_drain();
+    CHECK(pool_ix_mismatches() == 0, "the pool index matches both tables");
     printf("t_pool_family%s: %d checks, %d failed\n", off ? " (off)" : nocomp ? " (nocomp)" : "", checks, failed);
     return failed != 0;
 }}

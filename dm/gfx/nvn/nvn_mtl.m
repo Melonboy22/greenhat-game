@@ -2764,6 +2764,46 @@ static nvn_hmap g_alias_seen = {.klen = sizeof(alias_key)};   // key → g_fence
 // Live GPU-only image descriptions, including those not used yet. A dynamic-resolution family declares its largest image before any particular resolution is used.
 // Keeping only descriptions here lets its first allocation cover that family exactly, without allocating every resolution or rounding to a power of two.
 static nvn_hmap g_image_desc = {.klen = 8};   // serial → malloc'ed tex_t, under g_smu
+// Per memory pool: the sharing table's keys (g_alias) and the image descriptions' serials (g_image_desc) over it, so that the lookups by pool and offset walk one pool's entries
+// instead of every slot of both tables (image_texture, pool_heap_texture, mtl_tex_init, alias_overlaps, alias_take_over, mtl_alias_drop_pool). Ocarina of Time in Hyrule Castle
+// Town makes about 11 render targets a frame, each walking both tables whole: on a 16 GB MacBook Air on battery (2026-11-20, `sample`) image_texture, alias_take_over's
+// associated-object lookups and the cleanup walk were about 40 % of the replay thread, which the game's thread waited on (34-48 fps). Kept at every put and delete of either
+// table. Under g_smu
+typedef struct { alias_key *ak; uint32_t nak, cak; uint64_t *ser; uint32_t nser, cser; } pool_ix;
+static nvn_hmap g_pool_ix = {.klen = 8};   // pool (uint64_t of the pool_t pointer, as alias_key.pool) → malloc'ed pool_ix
+static pool_ix *pix_get(uint64_t pool, int make) {
+    pool_ix *x = nvn_hm_get(&g_pool_ix, &pool);
+    if (!x && make) { x = calloc(1, sizeof *x); if (!x) MDIE("the pool index: out of memory"); nvn_hm_put(&g_pool_ix, &pool, x); }
+    return x;
+}
+static void pix_maybe_free(uint64_t pool, pool_ix *x) {
+    if (!x || x->nak || x->nser) return;
+    nvn_hm_del(&g_pool_ix, &pool); free(x->ak); free(x->ser); free(x);
+}
+static void pix_alias_add(const alias_key *k) {
+    pool_ix *x = pix_get(k->pool, 1);
+    if (x->nak == x->cak) { uint32_t c = x->cak ? 2 * x->cak : 8; alias_key *g = realloc(x->ak, c * sizeof *g); if (!g) MDIE("the pool index: out of memory"); x->ak = g; x->cak = c; }
+    x->ak[x->nak++] = *k;
+}
+static void pix_alias_del(const alias_key *k) {
+    pool_ix *x = pix_get(k->pool, 0); if (!x) return;
+    for (uint32_t i = 0; i < x->nak; i++) if (!memcmp(&x->ak[i], k, sizeof *k)) { x->ak[i] = x->ak[--x->nak]; break; }
+    pix_maybe_free(k->pool, x);
+}
+static void pix_desc_add(const tex_t *d, uint64_t serial) {
+    pool_ix *x = pix_get((uint64_t)(uintptr_t)d->pool, 1);
+    if (x->nser == x->cser) { uint32_t c = x->cser ? 2 * x->cser : 8; uint64_t *g = realloc(x->ser, c * sizeof *g); if (!g) MDIE("the pool index: out of memory"); x->ser = g; x->cser = c; }
+    x->ser[x->nser++] = serial;
+}
+static void pix_desc_del(const tex_t *d, uint64_t serial) {
+    uint64_t pool = (uint64_t)(uintptr_t)d->pool; pool_ix *x = pix_get(pool, 0); if (!x) return;
+    for (uint32_t i = 0; i < x->nser; i++) if (x->ser[i] == serial) { x->ser[i] = x->ser[--x->nser]; break; }
+    pix_maybe_free(pool, x);
+}
+static void image_desc_del(uint64_t serial) {   // caller holds g_smu
+    tex_t *od = nvn_hm_del(&g_image_desc, &serial);
+    if (od) { pix_desc_del(od, serial); free(od); }
+}
 // GPU-written compressible images and render targets, with or without the image flag: Ocarina of Time's dynamic-resolution depth buffer (COMPRESSIBLE alone, a VIRTUAL pool) made
 // 15 live Depth32Float descriptions of 1,882-1,920 pixels at one offset, 14.5 MB each, until they shared a heap. Display, video, linear and sparse images keep their own path
 enum { IMAGE_NOT_SHARED = NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET };
@@ -2772,12 +2812,8 @@ static int image_shape(const tex_t *t) {
         && t->d.target == NVN_TEXTURE_TARGET_2D && t->d.depth == 1 && t->d.levels == 1 && t->d.samples <= 1 && !t->d.stride;
 }
 static void image_desc_drop_pool(const void *pool) {   // caller holds g_smu
-    for (uint32_t i = 0; i < g_image_desc.cap;) {
-        if (g_image_desc.vals[i] && ((tex_t *)g_image_desc.vals[i])->pool == pool) {
-            uint64_t serial; memcpy(&serial, g_image_desc.keys + (size_t)i * 8, 8);
-            free(nvn_hm_del(&g_image_desc, &serial));   // deletion shifts entries: examine this slot again
-        } else i++;
-    }
+    pool_ix *x = pix_get((uint64_t)(uintptr_t)pool, 0);
+    while (x && x->nser) { uint64_t serial = x->ser[x->nser - 1]; image_desc_del(serial); x = pix_get((uint64_t)(uintptr_t)pool, 0); }   // each delete takes it from the list
 }
 // Deferred command descriptors and persistent bindings retain a texture serial
 // independently of the guest descriptor and the bounded recently-finalized cache.
@@ -2852,6 +2888,7 @@ static void alias_let_go(const alias_key *ks, uint32_t n) {
     for (uint32_t j = 0; j < n; j++) {
         void *old = nvn_hm_del(&g_alias, &ks[j]);
         if (!old) continue;
+        pix_alias_del(&ks[j]);
         if (gone) gone[ng++] = old;
         nvn_hm_del(&g_alias_seen, &ks[j]);
         id o = CFBridgingRelease(old);
@@ -2867,12 +2904,12 @@ static int alias_overlaps(const alias_key *nk) {
     nvn_texlayout L; nvn_tex_layout(&nk->d, &L);
     if (!L.size) return 0;
     int64_t lo = nk->off, hi = nk->off + (int64_t)L.size;
-    for (uint32_t i = 0; i < g_alias.cap; i++) {
-        if (!g_alias.vals[i]) continue;
-        alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
-        if (k.pool != nk->pool || !memcmp(&k, nk, sizeof k) || k.off >= hi) continue;
-        nvn_texlayout kl; nvn_tex_layout(&k.d, &kl);
-        if (k.off + (int64_t)kl.size > lo) return 1;
+    const pool_ix *x = pix_get(nk->pool, 0);
+    for (uint32_t i = 0; x && i < x->nak; i++) {
+        const alias_key *k = &x->ak[i];
+        if (k->off >= hi || !memcmp(k, nk, sizeof *k)) continue;
+        nvn_texlayout kl; nvn_tex_layout(&k->d, &kl);
+        if (k->off + (int64_t)kl.size > lo) return 1;
     }
     return 0;
 }
@@ -2887,15 +2924,17 @@ static void alias_take_over(const alias_key *nk) {
     static uint64_t keep = UINT64_MAX; if (keep == UINT64_MAX) { const char *e = getenv("DM_NVN_ALIAS_KEEP_MB"); keep = e ? strtoull(e, NULL, 0) << 20 : g_dev.recommendedMaxWorkingSetSize / 2; }
     uint64_t comp_idle = g_dev.currentAllocatedSize < keep ? 1800 : ALIAS_IDLE;
     uint32_t n = 0; alias_key ks[16];
-    for (uint32_t i = 0; i < g_alias.cap && n < 16; i++) {
-        if (!g_alias.vals[i]) continue;
-        if (objc_getAssociatedObject((__bridge id)g_alias.vals[i], &g_image_heap_owner_key)) continue;
-        alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
-        if (k.pool != nk->pool || !memcmp(&k, nk, sizeof k) || k.off >= hi) continue;
+    const pool_ix *x = pix_get(nk->pool, 0);   // the cheap tests first: the associated-object lookup was most of this walk's time when it came first, for every entry
+    for (uint32_t i = 0; x && i < x->nak && n < 16; i++) {
+        const alias_key k = x->ak[i];
+        if (k.off >= hi || !memcmp(&k, nk, sizeof k)) continue;
         nvn_texlayout kl; nvn_tex_layout(&k.d, &kl);
+        if (k.off + (int64_t)kl.size <= lo) continue;
         uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k);
         uint64_t idle = (k.d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) ? comp_idle : ALIAS_IDLE;
-        if (k.off + (int64_t)kl.size <= lo || (seen && g_fence + 1 - seen < idle) || serial_table_holds(g_alias.vals[i])) continue;
+        if (seen && g_fence + 1 - seen < idle) continue;
+        void *v = nvn_hm_get(&g_alias, &k);
+        if (!v || serial_table_holds(v) || objc_getAssociatedObject((__bridge id)v, &g_image_heap_owner_key)) continue;
         ks[n++] = k;
     }
     alias_let_go(ks, n);
@@ -2941,7 +2980,7 @@ static void pool_tex_put(const tex_t *t) {
     CFSetAddValue(set, (const void *)(uintptr_t)t->serial); nvn_hm_put(&g_tex_pool, &t->serial, (void *)t->pool);
 }
 static nvn_hmap g_ghost = {.klen = 8}; static uint64_t g_ghost_puts, g_ghost_drained;
-typedef struct ghost_use { struct ghost_use *prev, *next; uint64_t serial, frame, sub; } ghost_use;   // a ghost entry's last use
+typedef struct ghost_use { struct ghost_use *prev, *next; uint64_t serial, frame, sub; int8_t kept; } ghost_use;   // a ghost entry's last use; kept: ghost_kept_long's answer for its object (-1 not asked since its last use)
 static nvn_hmap g_ghost_use = {.klen = 8};    // serial → its ghost_use: the same serials as g_ghost. Under g_smu
 static ghost_use *g_ghost_lru, *g_ghost_mru;  // the list, least recently used first
 static unsigned ghost_floor(void) { static unsigned n; if (!n) { const char *e = getenv("DM_NVN_GHOST_N"); long v = e && *e ? atol(e) : NGHOST; n = v < 64 ? 64 : (unsigned)v; } return n; }
@@ -2955,7 +2994,7 @@ static void ghost_used(uint64_t k) {   // a lookup or a put of k's ghost entry: 
     ghost_use *u = nvn_hm_get(&g_ghost_use, &k);
     if (!u) { u = calloc(1, sizeof *u); if (!u) MDIE("ghost table allocation failed"); u->serial = k; nvn_hm_put(&g_ghost_use, &k, u); }
     else if (u != g_ghost_mru) ghost_unlink(u);
-    u->frame = atomic_load(&g_cur_frame); u->sub = g_fence + 1;
+    u->frame = atomic_load(&g_cur_frame); u->sub = g_fence + 1; u->kept = -1;   // a put may have changed its object
     if (u != g_ghost_mru) { u->prev = g_ghost_mru; if (g_ghost_mru) g_ghost_mru->next = u; else g_ghost_lru = u; g_ghost_mru = u; }
 }
 static void obj_drop(id o);
@@ -2969,15 +3008,15 @@ void mtl_tex_init(const tex_t *t) {
     tex_t *desc = image_shape(t) ? malloc(sizeof *desc) : NULL; if (desc) *desc = *t;
     pthread_mutex_lock(&g_smu);
     nvn_hm_put(&g_tex_live, &t->serial, t); pool_tex_put(t);
-    free(nvn_hm_del(&g_image_desc, &t->serial));
+    image_desc_del(t->serial);
     if (desc) {
-        int dup = 0;
-        for (uint32_t i = 0; i < g_image_desc.cap; i++) if (g_image_desc.vals[i]) {
-            const tex_t *o = g_image_desc.vals[i];
-            if (o->pool == t->pool && o->off == t->off && o->d.format == t->d.format && o->d.width == t->d.width && o->d.height == t->d.height && o->d.flags == t->d.flags) { dup = 1; break; }
+        int dup = 0; const pool_ix *x = pix_get((uint64_t)(uintptr_t)t->pool, 0);
+        for (uint32_t i = 0; x && i < x->nser; i++) {
+            const tex_t *o = nvn_hm_get(&g_image_desc, &x->ser[i]);
+            if (o && o->off == t->off && o->d.format == t->d.format && o->d.width == t->d.width && o->d.height == t->d.height && o->d.flags == t->d.flags) { dup = 1; break; }
         }
         if (dup) free(desc);
-        else free(nvn_hm_put(&g_image_desc, &t->serial, desc));
+        else { image_desc_del(t->serial); nvn_hm_put(&g_image_desc, &t->serial, desc); pix_desc_add(desc, t->serial); }
     }
     pthread_mutex_unlock(&g_smu);
 }
@@ -2991,7 +3030,9 @@ static unsigned ghost_trim_locked(unsigned budget, unsigned floor_) {
         next = u->next;
         uint64_t af = frame > u->frame ? frame - u->frame : 0, as = sub > u->sub ? sub - u->sub : 0;
         if (af < idle && as < GHOST_IDLE_SUBS) break;
-        if (af < GHOST_IDLE_KEPT && ghost_kept_long(hm_get_id(&g_ghost, &u->serial))) continue;
+        // The answer is kept on the entry: idle entries that cannot be made again sit at the front of the list until GHOST_IDLE_KEPT frames, and every commit and ghost put
+        // walked them again, an object class test each (Ocarina of Time's Castle Town: about 5 % of the replay thread, 2026-11-20)
+        if (af < GHOST_IDLE_KEPT) { if (u->kept < 0) u->kept = (int8_t)ghost_kept_long(hm_get_id(&g_ghost, &u->serial)); if (u->kept) continue; }
         ghost_del_locked(u->serial); n++;
     }
     g_ghost_drained += n;
@@ -3128,13 +3169,9 @@ void mtl_alias_drop_pool(const void *pool) {
         free(ks); }
     { void *h = nvn_hm_del(&g_pool_heap, &pool); if (h) CFRelease(h); }   // the pool's placement heap goes when its last texture does (each holds it)
     uint32_t n = 0; alias_key *ks = NULL;
-    for (uint32_t i = 0; i < g_alias.cap; i++) {
-        if (!g_alias.vals[i]) continue;
-        alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
-        if (k.pool != (uint64_t)(uintptr_t)pool) continue;
-        alias_key *nk = realloc(ks, (n + 1) * sizeof *ks); if (!nk) break; ks = nk; ks[n++] = k;
-        gone_add(gone, (__bridge id)g_alias.vals[i]);
-    }
+    { const pool_ix *x = pix_get((uint64_t)(uintptr_t)pool, 0);
+      if (x && x->nak) { ks = malloc(x->nak * sizeof *ks); if (!ks) MDIE("the finalized pool's textures"); }
+      for (uint32_t i = 0; x && ks && i < x->nak; i++) { void *v = nvn_hm_get(&g_alias, &x->ak[i]); if (!v) continue; ks[n++] = x->ak[i]; gone_add(gone, (__bridge id)v); } }
     // The pool's live texture objects: their entries go, and their serials leave the index with the pool
     uint64_t dropped = 0, bytes = 0;
     { uintptr_t pk = (uintptr_t)pool; CFMutableSetRef mine = nvn_hm_del(&g_pool_tex, &pk);
@@ -3156,6 +3193,7 @@ void mtl_alias_drop_pool(const void *pool) {
     for (uint32_t j = 0; j < n; j++) {
         void *old = nvn_hm_del(&g_alias, &ks[j]);
         if (!old) continue;
+        pix_alias_del(&ks[j]);
         nvn_hm_del(&g_alias_seen, &ks[j]);
         id o = CFBridgingRelease(old);
         if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
@@ -4933,11 +4971,13 @@ static id<MTLTexture> image_texture(const tex_t *t, MTLTextureDescriptor *d0) {
     if (!need.size) return nil;
     NvImageHeap *owner = nil; MTLTextureDescriptor *largest = d; NSUInteger capacity = need.size; int family = 0;
     pthread_mutex_lock(&g_smu);
-    for (uint32_t i = 0; i < g_alias.cap; i++) if (g_alias.vals[i]) {
-        alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
-        if (k.pool != (uint64_t)(uintptr_t)t->pool || k.off != t->off || k.d.format != t->d.format) continue;
+    const pool_ix *px = pix_get((uint64_t)(uintptr_t)t->pool, 0);
+    for (uint32_t i = 0; px && i < px->nak; i++) {
+        const alias_key k = px->ak[i];
+        if (k.off != t->off || k.d.format != t->d.format) continue;
+        void *v = nvn_hm_get(&g_alias, &k); if (!v) continue;
         family |= k.d.width != t->d.width || k.d.height != t->d.height;
-        id<MTLTexture> other = (__bridge id)g_alias.vals[i], base = other.parentTexture ? other.parentTexture : other;
+        id<MTLTexture> other = (__bridge id)v, base = other.parentTexture ? other.parentTexture : other;
         NvImageHeap *o = objc_getAssociatedObject(other, &g_image_heap_owner_key);
         // Storage placed in its pool's heap keeps its scaled offset for every later description (pool_heap_texture): taken as a family heap, a description over it landed at
         // offset 0, over what the pool placed there (found by jonpage0 on #1453)
@@ -4946,9 +4986,9 @@ static id<MTLTexture> image_texture(const tex_t *t, MTLTextureDescriptor *d0) {
         MTLTextureUsage usage = base.usage | (tex_atomic_capable(base) ? MTLTextureUsageShaderAtomic : 0);
         if (o && o->heap.size >= need.size && base.pixelFormat == d.pixelFormat && usage == d.usage && (!owner || o->heap.size < owner->heap.size)) owner = o;
     }
-    if (!owner) for (uint32_t i = 0; i < g_image_desc.cap; i++) if (g_image_desc.vals[i]) {
-        const tex_t *other = g_image_desc.vals[i];
-        if (other->pool != t->pool || other->off != t->off || other->d.format != t->d.format) continue;
+    if (!owner) for (uint32_t i = 0; px && i < px->nser; i++) {
+        const tex_t *other = nvn_hm_get(&g_image_desc, &px->ser[i]);
+        if (!other || other->off != t->off || other->d.format != t->d.format) continue;
         family |= other->d.width != t->d.width || other->d.height != t->d.height;
         MTLTextureDescriptor *od = tex_desc(other, 0); if (!od) continue;
         od.pixelFormat = d.pixelFormat; od.usage |= d.usage;
@@ -5034,13 +5074,14 @@ static id<MTLTexture> pool_heap_texture(const tex_t *t, MTLTextureDescriptor *d)
     int family = 0;
     pthread_mutex_lock(&g_smu);
     if (nocomp && image_shape(t) && d.allowGPUOptimizedContents) {
-        for (uint32_t i = 0; i < g_alias.cap && !family; i++) if (g_alias.vals[i]) {
-            const alias_key *k = (const alias_key *)(const void *)(g_alias.keys + (size_t)i * g_alias.klen);
-            family = k->pool == (uint64_t)(uintptr_t)p && k->off == t->off && k->d.format == t->d.format && (k->d.width != t->d.width || k->d.height != t->d.height);
+        const pool_ix *px = pix_get((uint64_t)(uintptr_t)p, 0);
+        for (uint32_t i = 0; px && i < px->nak && !family; i++) {
+            const alias_key *k = &px->ak[i];
+            family = k->off == t->off && k->d.format == t->d.format && (k->d.width != t->d.width || k->d.height != t->d.height);
         }
-        for (uint32_t i = 0; i < g_image_desc.cap && !family; i++) if (g_image_desc.vals[i]) {
-            const tex_t *o = g_image_desc.vals[i];
-            family = o->pool == p && o->off == t->off && o->d.format == t->d.format && (o->d.width != t->d.width || o->d.height != t->d.height);
+        for (uint32_t i = 0; px && i < px->nser && !family; i++) {
+            const tex_t *o = nvn_hm_get(&g_image_desc, &px->ser[i]);
+            family = o && o->off == t->off && o->d.format == t->d.format && (o->d.width != t->d.width || o->d.height != t->d.height);
         }
     }
     NvPoolHeap *h = (__bridge NvPoolHeap *)nvn_hm_get(&g_pool_heap, &p);
@@ -5338,6 +5379,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
     pthread_mutex_lock(&g_smu);
     if (!g_alias_set) g_alias_set = CFSetCreateMutable(NULL, 0, NULL);
     alias_take_over(&ak);
+    if (!nvn_hm_get(&g_alias, &ak)) pix_alias_add(&ak);
     hm_put_id(&g_alias, &ak, mt); CFSetAddValue(g_alias_set, (__bridge const void *)mt); nvn_hm_put(&g_alias_seen, &ak, (void *)(uintptr_t)(g_fence + 1));
     pthread_mutex_unlock(&g_smu);
     if (trace_tex(t)) MLOG("[trace] ser=%llu made host texture %p (%s)", (unsigned long long)t->serial, (__bridge void *)mt, mt.parentTexture ? "a view" : "new");
@@ -5459,7 +5501,7 @@ void mtl_tex_release(tex_t *t) {
     }
     int was_live = nvn_hm_del(&g_tex_live, &t->serial) != NULL;
     pool_tex_del(t->serial);
-    if (!t->pool) free(nvn_hm_del(&g_image_desc, &t->serial));
+    if (!t->pool) image_desc_del(t->serial);
     pthread_mutex_lock(&g_cpu_tex_mu);
     void *pool = nvn_hm_del(&g_cpu_tex, &t->serial);
     if (pool && t->pool && t->mem) nvn_hm_put(&g_cpu_tex_retired, &t->serial, pool);

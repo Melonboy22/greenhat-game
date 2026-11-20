@@ -1,5 +1,6 @@
 // Live dynamic-resolution descriptors must not multiply their NVN storage.
 #include "../nvn/nvn_mtl.m"
+#include "t_pool_ix_check.h"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t *g_mod; int g_nmod;
@@ -247,5 +248,6 @@ int main(void) { @autoreleasepool {
     CHECK(g_image_heap_n==0,"repeated destruction leaves no heap owner");
     CHECK(g_dev.currentAllocatedSize<=settled+(3<<20),"repeated families do not retain their old physical allocations");
     free(mem);
+    CHECK(pool_ix_mismatches() == 0, "the pool index matches both tables");
     printf("image aliases: %d checks, %d failed\n",checks,failed); return failed!=0;
 } }

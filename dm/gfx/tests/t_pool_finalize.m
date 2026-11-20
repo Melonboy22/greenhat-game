@@ -2,6 +2,7 @@
 // live texture objects go, and so does every live or finalized (ghost) entry that names one of those textures, a packaged texture of the pool or one's texture, or a view of one.
 // Entries of another pool stay, and the textures leave the residency set once the work encoded before is done
 #include "../nvn/nvn_mtl.m"
+#include "t_pool_ix_check.h"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t *g_mod; int g_nmod;
@@ -47,6 +48,7 @@ int main(void) { @autoreleasepool {
     pthread_mutex_lock(&g_smu); uintptr_t kb = (uintptr_t)&pb; int gone = nvn_hm_get(&g_pool_tex, &kb) == NULL && g_tex_pool.n == 0; pthread_mutex_unlock(&g_smu);
     CHECK("a texture's release takes it out of its pool's index", gone);
     settle();
+    CHECK("the pool index matches both tables", pool_ix_mismatches() == 0);
     printf("t_pool_finalize: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 }}

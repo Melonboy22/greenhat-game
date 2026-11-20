@@ -2,6 +2,7 @@
 // a texture made over memory another has used leaves it as it is, and what is not a render target, or not in such a pool, keeps an allocation of its own.
 // "./t_pool_heap off" runs with DM_NVN_POOL_HEAP=0: no pool heap is made (a render target may still take a recycled heap of its own, rh_texture).
 #include "../nvn/nvn_mtl.m"
+#include "t_pool_ix_check.h"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t *g_mod; int g_nmod;
@@ -106,5 +107,6 @@ int main(int argc, char **argv) { @autoreleasepool {
     CHECK(!weak_heap || ![g_res_objects containsObject:weak_heap], "the pool's heap leaves the residency set with its last texture");
     CHECK(g_image_heap_n == 0, "no heap owner is left after the pool goes");
     free(mem); free(cpu_mem);
+    CHECK(pool_ix_mismatches() == 0, "the pool index matches both tables");
     printf("t_pool_heap%s: %d checks, %d failed\n", off ? " (off)" : "", checks, failed); return failed != 0;
 } }

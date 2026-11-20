@@ -3,6 +3,7 @@
 // GHOST_TRIM a commit, and an entry in use stays however many there are. A texture the GPU wrote waits GHOST_IDLE_KEPT frames. Under memory pressure (ghost_trim with force 1 or 2)
 // the idle entries the floor keeps go too, down to 64; at the eviction level (force 0) nothing more. A second run (--floor) checks DM_NVN_GHOST_N and DM_NVN_GHOST_IDLE
 #include "../nvn/nvn_mtl.m"
+#include "t_pool_ix_check.h"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t *g_mod; int g_nmod;
@@ -95,6 +96,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         CHECK("a purge takes the entries with their places", g_ghost.n == had - 5 && tex_get(base + 90000) == nil && list_ok());
     }
     mtl_drain(); defer_drain();
+    CHECK("the pool index matches both tables", pool_ix_mismatches() == 0);
     printf("t_ghost_trim%s: %d checks, %d failed\n", floor_run ? " (floor)" : "", checks, failed);
     return failed != 0;
 }}

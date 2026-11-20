@@ -3,6 +3,7 @@
 // serial_del, tex_put and the upgrade's in-place replacement): two serials naming one object count twice and the object stays held until both go. Last, a takeover past 1,000
 // held entries with 20,000 serials in the table, which walked the serial table for each entry before (it prints the time).
 #include "../nvn/nvn_mtl.m"
+#include "t_pool_ix_check.h"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t *g_mod; int g_nmod;
@@ -54,6 +55,7 @@ int main(void) { @autoreleasepool {
         for (int i = 0; i < NA; i++) {
             id e = [NSObject new]; [keep addObject:e];
             alias_key k; memset(&k, 0, sizeof k); k.off = (int64_t)i * 4096; k.d = tex(0, NVN_FORMAT_RGBA8, 32).d;
+            if (!nvn_hm_get(&g_alias, &k)) pix_alias_add(&k);   // as tex_mtl_ puts one: the per-pool index walked by alias_take_over
             hm_put_id(&g_alias, &k, e);
         }
         pthread_mutex_unlock(&g_smu);
@@ -71,5 +73,6 @@ int main(void) { @autoreleasepool {
     }
     mtl_tex_release(&b); mtl_tex_release(&c);
     next_submission(); defer_drain();
+    CHECK(pool_ix_mismatches() == 0, "the pool index matches both tables");
     printf("t_alias_takeover: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }
