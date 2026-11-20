@@ -347,6 +347,8 @@ check_t_pool_family: t_pool_family
 	MTL_DEBUG_LAYER=1 ./t_pool_family nocomp
 t_pool_order: t_pool_order.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_order.m $(MTL_T_SRC) $(FW)
+t_tex_slab: t_tex_slab.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_tex_slab.m $(MTL_T_SRC) $(FW)
 t_pool_finalize: t_pool_finalize.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_finalize.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_pool_finalize

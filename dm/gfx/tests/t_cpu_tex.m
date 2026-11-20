@@ -228,6 +228,7 @@ static void settle(void) { for (int i = 0; i < 2; i++) { g_fence++; pthread_mute
 // one, the last through the ghost ring. The texture stays resident while any serial entry, live or finalized, holds it, and leaves the residency set with the last. Ocarina of Time's
 // 260x260 terrain tiles handed over this way left the set with the package, or with the first holder a ghost-ring eviction dropped, while still drawn: GPU address faults (#1326)
 static void handover_holders(void) {
+    int slab_was = g_tex_slab_on; g_tex_slab_on = 0;   // the residency of one texture of its own (a texture in a shared heap is resident through its heap: t_tex_slab)
     const size_t len = 262144;
     uint8_t *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     if (mem == MAP_FAILED) abort();
@@ -264,6 +265,7 @@ static void handover_holders(void) {
     h_nvnTextureFinalize(&c); h_nvnMemoryPoolFinalize((NVNmemoryPool *)&pool); settle();
     CHECK(!resident(tc), "hand-over: the pool's own texture goes with the pool");
     munmap(mem, len);
+    g_tex_slab_on = slab_was;
 }
 // A normal tile made again over a drawn tile's storage, set up through NVN as the game does: the new tile is on the first-use list when it is resolved (nvn_ft_tracked), so
 // tex_storage_gpu takes it for a texture uploaded from its storage and says no; the fill asks only the kind (tex_storage_gpu_kind, tex_init_fill). In Ocarina of Time every remade

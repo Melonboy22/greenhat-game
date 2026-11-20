@@ -3985,6 +3985,60 @@ static id<MTLBuffer> up_big_src(uint64_t addr, uint64_t len, uint64_t *off) {
     res_add(buf); [g_up_keep addObject:buf]; *off = (uint64_t)addr - a;
     return buf;
 }
+// Shared heaps for the textures the game loads (pkg_upload_). Each texture of its own is one allocation in the residency set, and a residency commit costs about 0.1-0.2 ms for
+// every allocation it adds or removes (oot-plus b985672b, 2026-11-20): Ocarina of Time's area changes added 500-1,900 allocations in a frame, and the commits took 71-410 ms of
+// frames of 110-504 ms. A texture placed in a heap needs only its heap in the set (res_add_at adds the heap), so one commit carries a few heaps instead of hundreds of textures.
+// Textures up to SLAB_TEX_MAX go into automatic heaps of SLAB_BYTES (Metal places them and takes the space back when one is freed); larger ones stay allocations of their own. A heap
+// lives while a texture in it does (NvTexSlab, retained by each texture), plus the newest one; it leaves the set when its last texture is freed, which is after the GPU is done with it
+// (defer_obj_release), as for a texture of its own, so its memory is reused only as Metal reuses freed memory and no alias flush is added (resource_vis). Placed textures keep the
+// standalone ones' storage (private) and hazard tracking. DM_NVN_TEX_SLAB=0 makes each one its own allocation, as before
+enum { SLAB_BYTES = 64u << 20, SLAB_TEX_MAX = 16u << 20, SLAB_SCAN = 8 };
+static _Atomic uint64_t g_slab_made, g_slab_live, g_slab_live_bytes, g_slab_tex, g_slab_solo;   // heaps made / alive / their bytes; textures placed / left on their own (t_tex_slab)
+@interface NvTexSlab : NSObject { @public id<MTLHeap> heap; } @end
+@implementation NvTexSlab
+- (void)dealloc { uint64_t sz = heap.size; res_remove(heap); atomic_fetch_sub(&g_slab_live, 1); atomic_fetch_sub(&g_slab_live_bytes, sz); }
+@end
+static char g_slab_key;
+static os_unfair_lock g_slab_lk = OS_UNFAIR_LOCK_INIT;
+static NvTexSlab *g_slab_new;            // the newest heap, kept while it is the newest even when empty
+static NSPointerArray *g_slab_older;     // older heaps, weakly: gone once their last texture is
+static int g_tex_slab_on = -1;   // DM_NVN_TEX_SLAB, read at the first texture (a test sets it to check a texture of its own)
+static int tex_slab_on(void) { if (g_tex_slab_on < 0) { const char *e = getenv("DM_NVN_TEX_SLAB"); g_tex_slab_on = !e || atoi(e) != 0; } return g_tex_slab_on; }
+static id<MTLTexture> slab_place(NvTexSlab *s, MTLTextureDescriptor *d, MTLSizeAndAlign sa) {
+    if (!s || [s->heap maxAvailableSizeWithAlignment:sa.align] < sa.size) return nil;
+    id<MTLTexture> mt = [s->heap newTextureWithDescriptor:d];
+    if (mt) objc_setAssociatedObject(mt, &g_slab_key, s, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return mt;
+}
+// A new texture for d: placed in a shared heap when it is small enough, else one of its own. Either way the caller makes it resident (res_add)
+static id<MTLTexture> slab_texture(MTLTextureDescriptor *d) {
+    MTLSizeAndAlign sa = tex_slab_on() && d.storageMode == MTLStorageModePrivate && d.sampleCount <= 1 ? [g_dev heapTextureSizeAndAlignWithDescriptor:d] : (MTLSizeAndAlign){0, 0};
+    if (!sa.size || sa.size > SLAB_TEX_MAX) { atomic_fetch_add(&g_slab_solo, 1); return [g_dev newTextureWithDescriptor:d]; }
+    id<MTLTexture> mt = nil;
+    os_unfair_lock_lock(&g_slab_lk);
+    mt = slab_place(g_slab_new, d, sa);
+    if (!mt && g_slab_older) {   // the newest heaps first; freed textures leave room in older ones
+        [g_slab_older compact];
+        for (NSInteger i = (NSInteger)g_slab_older.count - 1, n = 0; i >= 0 && n < SLAB_SCAN && !mt; i--, n++) mt = slab_place((__bridge NvTexSlab *)[g_slab_older pointerAtIndex:(NSUInteger)i], d, sa);
+    }
+    if (!mt) {
+        MTLHeapDescriptor *hd = [MTLHeapDescriptor new];
+        hd.type = MTLHeapTypeAutomatic; hd.storageMode = MTLStorageModePrivate; hd.cpuCacheMode = d.cpuCacheMode; hd.size = SLAB_BYTES;
+        hd.hazardTrackingMode = MTLHazardTrackingModeTracked;   // as a texture of its own (a heap's default is untracked)
+        id<MTLHeap> h = [g_dev newHeapWithDescriptor:hd];
+        if (h) {
+            NvTexSlab *s = [NvTexSlab new]; s->heap = h;
+            if (g_slab_new) { if (!g_slab_older) g_slab_older = [NSPointerArray weakObjectsPointerArray]; [g_slab_older addPointer:(__bridge void *)g_slab_new]; }
+            g_slab_new = s;
+            uint64_t n = atomic_fetch_add(&g_slab_made, 1) + 1; atomic_fetch_add(&g_slab_live, 1); atomic_fetch_add(&g_slab_live_bytes, h.size);
+            if (n == 1) MLOG("texture heaps: the game's textures up to %u MB share heaps of %u MB, one residency entry each (DM_NVN_TEX_SLAB=0 turns this off)", SLAB_TEX_MAX >> 20, SLAB_BYTES >> 20);
+            mt = slab_place(s, d, sa);
+        }
+    }
+    os_unfair_lock_unlock(&g_slab_lk);
+    if (mt) { atomic_fetch_add(&g_slab_tex, 1); return mt; }
+    atomic_fetch_add(&g_slab_solo, 1); return [g_dev newTextureWithDescriptor:d];
+}
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep) {
     MTLTextureDescriptor *d = tex_desc(t, 1);
     if (!d) return nil;
@@ -3996,7 +4050,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;
     id<MTLTexture> mt = reuse && reuse.pixelFormat == d.pixelFormat && reuse.width == d.width && reuse.height == d.height && reuse.mipmapLevelCount == d.mipmapLevelCount && reuse.textureType == d.textureType
                         && (reuse.usage & d.usage) == d.usage
-                        ? reuse : [g_dev newTextureWithDescriptor:d];
+                        ? reuse : slab_texture(d);
     if (!mt) { RED_ONCE(2, "failed to create MTLTexture %ux%u format %#x target %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
     if (mt.allocatedSize >= (256u << 20)) { static int nb; if (nb++ < 20)   // the textures that take most of the GPU's memory (a GPU out-of-memory error says nothing of which)
         MLOG("large texture ser=%llu %ux%ux%u format %#x target %d levels %u: %llu MB%s", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels,

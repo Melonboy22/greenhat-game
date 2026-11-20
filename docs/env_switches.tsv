@@ -253,6 +253,7 @@ DM_NVN_TEXRAW	diagnostic	`=<serial>,…` or `info` (the textures `DM_NVN_TEXINFO
 DM_NVN_TEXSNAP	diagnostic	`=<in-frame pass index>,…`: with `DM_NVN_TEXDUMP`, copies those passes' colour attachments as they end and saves them with the end-of-frame dump
 DM_NVN_TEX_SOFT	switch	`1` / `0` overrides the profile's `tex_soft`: large block-compressed textures from the game files are kept without their finest level on the GPU (about three quarters of their bytes)
 DM_NVN_TEX_SOFT_ARRAYS	switch	`1` / `0` overrides the profile's `tex_soft_arrays`: whether 2D array textures are made soft too (with `tex_soft`)
+DM_NVN_TEX_SLAB	switch	`=0` makes every texture the game loads an allocation of its own again; by default those up to 16 MB share automatic heaps of 64 MB, so a residency commit adds a few heaps instead of hundreds of textures (area-change pauses)
 DM_NVN_TEX_SOFT_LEVELS	switch	`1` to `3` overrides the profile's `tex_soft_levels`: how many finest levels a soft texture leaves out (fewer where it would drop under 128 texels on its short side)
 DM_NVN_TRACE_TEX	diagnostic	`=<W>x<H>:<NVN format>` (e.g. `260x260:0xd`): logs `[trace]` lines for every texture of that shape: how it gets its host texture (shared, made and filled or zeroed, taken from its storage), each render pass and GPU store into it, CPU rewrites after its first use and its release, with host texture addresses; at most 20,000 lines
 DM_NVN_TREG_ID	diagnostic	`=<n>` logs every registration of texture ID n: what it holds from then on, and the frame being recorded
